@@ -55,20 +55,33 @@ export default function MapControl() {
     return null;
   };
 
+  // Refs for high-performance, synchronous animation tracking
+  const riderRef = useRef({
+    longitude: -122.4,
+    latitude: 37.8,
+    bearing: 0
+  });
+
   const animateRider = async (routeInfo: any) => {
     const { geometry, steps } = routeInfo;
     const line = turf.lineString(geometry.coordinates);
     const distanceMeter = turf.length(line, { units: 'kilometers' });
     let currentDist = 0;
     
+    // Store previous view state to return to
+    const preNavZoom = viewState.zoom;
+    const preNavPitch = viewState.pitch;
+
     setIsNavigating(true);
 
-    // Initial Cinematic Entry
-    if (mapRef.current) {
-      const firstPoint = geometry.coordinates[0];
-      const secondPoint = geometry.coordinates[1];
-      const initialBearing = turf.bearing(turf.point(firstPoint), turf.point(secondPoint));
+    const firstPoint = geometry.coordinates[0];
+    const secondPoint = geometry.coordinates[1] || firstPoint;
+    const initialBearing = turf.bearing(turf.point(firstPoint), turf.point(secondPoint));
+    const startPos = { longitude: riderPosition.longitude, latitude: riderPosition.latitude };
+    const startBearing = riderRef.current.bearing;
 
+    // 1. CINEMATIC SYNC: Glide & Rotate Rider WHILE FlyTo Camera
+    if (mapRef.current) {
       mapRef.current.flyTo({
         center: [firstPoint[0], firstPoint[1]],
         zoom: 19,
@@ -77,9 +90,37 @@ export default function MapControl() {
         duration: 2500,
         essential: true
       });
-      // Delay movement until zoom is almost done
-      await new Promise(r => setTimeout(r, 2000));
     }
+
+    const syncDuration = 2500;
+    const startTime = performance.now();
+
+    const syncLoop = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / syncDuration, 1);
+      
+      // Smoothly interpolate position and bearing
+      const currentLon = startPos.longitude + (firstPoint[0] - startPos.longitude) * progress;
+      const currentLat = startPos.latitude + (firstPoint[1] - startPos.latitude) * progress;
+      
+      let bDiff = initialBearing - startBearing;
+      if (bDiff > 180) bDiff -= 360;
+      if (bDiff < -180) bDiff += 360;
+      const currentBearing = startBearing + bDiff * progress;
+
+      const pos = { longitude: currentLon, latitude: currentLat };
+      setRiderPosition(pos);
+      setRiderBearing(currentBearing);
+      riderRef.current = { longitude: currentLon, latitude: currentLat, bearing: currentBearing };
+
+      if (progress < 1) {
+        requestAnimationFrame(syncLoop);
+      }
+    };
+    requestAnimationFrame(syncLoop);
+    
+    // Wait for the sync animation to complete
+    await new Promise(r => setTimeout(r, syncDuration));
 
     const step = () => {
       if (currentDist >= distanceMeter) {
@@ -87,30 +128,52 @@ export default function MapControl() {
         setRouteData(null);
         setTargetWaypoint(null);
         setCurrentInstruction(null);
-        
-        // Cinematic Exit
         if (mapRef.current) {
-          mapRef.current.flyTo({
-            pitch: 0,
-            bearing: 0,
-            zoom: 14,
-            duration: 2500
-          });
+          mapRef.current.flyTo({ pitch: preNavPitch, bearing: 0, zoom: preNavZoom, duration: 2500 });
         }
         return;
       }
 
       currentDist += travelSpeed;
       const point = turf.along(line, currentDist, { units: 'kilometers' });
-      
-      // FIX: Use 5-meter lookAhead (0.005km) instead of 100m to fix early turning
       const lookAheadDist = Math.min(currentDist + 0.005, distanceMeter);
       const nextPoint = turf.along(line, lookAheadDist, { units: 'kilometers' });
       
-      const newBearing = turf.bearing(
+      const targetBearing = turf.bearing(
         turf.point(point.geometry.coordinates),
         turf.point(nextPoint.geometry.coordinates)
       );
+
+      // SMOOTH RIDER ROTATION
+      let bDiff = targetBearing - riderRef.current.bearing;
+      if (bDiff > 180) bDiff -= 360;
+      if (bDiff < -180) bDiff += 360;
+      riderRef.current.bearing += bDiff * 0.12; 
+
+      const newPos = {
+        longitude: point.geometry.coordinates[0],
+        latitude: point.geometry.coordinates[1]
+      };
+      
+      riderRef.current.longitude = newPos.longitude;
+      riderRef.current.latitude = newPos.latitude;
+
+      setRiderPosition(newPos);
+      setRiderBearing(riderRef.current.bearing);
+
+      // SMOOTH CAMERA CHASE (Softer lerp: 0.05 for weighted feel)
+      setViewState(prev => {
+        const lonDiff = newPos.longitude - prev.longitude;
+        const latDiff = newPos.latitude - prev.latitude;
+        const bViewDiff = riderRef.current.bearing - prev.bearing;
+
+        return {
+          ...prev,
+          longitude: prev.longitude + lonDiff * 0.05, 
+          latitude: prev.latitude + latDiff * 0.05,
+          bearing: prev.bearing + (bViewDiff > 180 ? bViewDiff - 360 : bViewDiff < -180 ? bViewDiff + 360 : bViewDiff) * 0.05
+        };
+      });
 
       // Current Instruction Logic
       let cumulativeDist = 0;
@@ -121,23 +184,6 @@ export default function MapControl() {
           break;
         }
       }
-
-      const newPos = {
-        longitude: point.geometry.coordinates[0],
-        latitude: point.geometry.coordinates[1]
-      };
-
-      setRiderPosition(newPos);
-      setRiderBearing(newBearing);
-
-      setViewState(prev => ({
-        ...prev,
-        ...newPos,
-        bearing: newBearing,
-        // Preserve manual zoom/pitch if user adjusts them
-        pitch: prev.pitch === 0 ? 65 : prev.pitch,
-        zoom: prev.zoom < 16 ? 19 : prev.zoom
-      }));
 
       requestAnimationFrame(step);
     };
@@ -243,8 +289,7 @@ export default function MapControl() {
         {routeData && (
           <Source id="route-path" type="geojson" data={routeData}>
             <Layer id="line-glow" type="line" paint={{ 'line-color': '#FF5D8F', 'line-width': 12, 'line-blur': 10, 'line-opacity': 0.3 }} />
-            <Layer id="line-layer" type="line" paint={{ 'line-color': '#FF5D8F', 'line-width': 6, 'line-opacity': 0.9 }} />
-            <Layer id="line-core" type="line" paint={{ 'line-color': '#FFFFFF', 'line-width': 2, 'line-opacity': 0.8 }} />
+            <Layer id="line-layer" type="line" paint={{ 'line-color': '#FF5D8F', 'line-width': 6, 'line-opacity': 1.0 }} />
           </Source>
         )}
 
@@ -274,8 +319,9 @@ export default function MapControl() {
           latitude={riderPosition.latitude} 
           anchor="center"
           rotationAlignment="map"
+          rotation={riderBearing}
         >
-          <div className="relative transition-transform duration-75 ease-linear" style={{ transform: `rotate(${riderBearing}deg)` }}>
+          <div className="relative transition-transform duration-75 ease-linear">
             <div className="w-12 h-12 flex items-center justify-center">
               <svg viewBox="0 0 100 100" className="w-10 h-10 drop-shadow-md relative z-10">
                 <path d="M50 10 L85 85 L50 70 L15 85 Z" fill="#FF5D8F" />
@@ -368,11 +414,6 @@ export default function MapControl() {
               </div>
             </div>
           )}
-        </div>
-      </div>
-      <div className="absolute bottom-6 left-6 z-10 flex gap-4">
-        <div className="bg-black/95 backdrop-blur-3xl border border-white/10 px-4 py-2 rounded-xl shadow-xl">
-          <p className="text-[9px] uppercase tracking-widest text-[#FF5D8F] font-bold">Operational</p>
         </div>
       </div>
     </div>
