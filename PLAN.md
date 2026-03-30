@@ -27,10 +27,15 @@ This plan breaks down the development into logical stages. **I will only work on
 - [ ] **Step 1.3: Manual Position Control**
     - Click-to-move or draggable rider marker.
     - *Verification: Does the rider marker move when clicked/dragged?*
-- [ ] **Step 1.4: Message/Hazard Pin System**
-    - "Drop Pin" mode to place messages on the map.
-    - Store pins in local React state for now.
-    - *Verification: Can we drop "Hazard" and "Friend" pins and see them on the map?*
+- [x] **Step 1.4: Message/Hazard Pin System**
+    - [x] "Drop Pin" mode to place messages on the map.
+    - [x] Store pins in local React state for now.
+    - [x] *Verification: Can we drop "Hazard" and "Friend" pins and see them on the map?*
+- [ ] **Step 1.5: UI Polish & Directional Awareness**
+    - [ ] Replace Rider icon with a Directional Arrow (Peach/Pink theme).
+    - [ ] Add "Bearing" control to simulate heading direction.
+    - [ ] Premium overhaul for Pin icons (Hazard, Friend).
+    - [ ] *Verification: Does the arrow rotate and look more premium?*
 
 ---
 

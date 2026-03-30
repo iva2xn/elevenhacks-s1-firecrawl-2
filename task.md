@@ -8,3 +8,9 @@
 - [x] **Step 1.2: Simulator Rider Marker**
 - [x] **Step 1.3: Manual Position Control**
 - [x] **Step 1.4: Message/Hazard Pin System**
+- [x] **Step 1.5: UI Polish & Directional Awareness**
+- [x] **Step 1.6: Road-Aware Navigation & Animation**
+    - [x] Install `@turf/turf`.
+    - [x] Implement `fetchRoute` with Mapbox Directions API.
+    - [x] Implement `animateRider` along the route.
+    - [x] Update Friend pin color to `#C084FC`.
