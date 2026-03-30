@@ -30,12 +30,27 @@ export default function MapControl() {
   // Sidebar & Dev Mode State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isDevMode, setIsDevMode] = useState(false);
-  const [travelSpeed, setTravelSpeed] = useState(0.001);
+  
+  // Travel Speed sync for real-time improvements
+  const travelSpeedRef = useRef(0.001);
+  const [travelSpeed, _setTravelSpeed] = useState(0.001);
+  const setTravelSpeed = (val: number) => {
+    _setTravelSpeed(val);
+    travelSpeedRef.current = val;
+  };
+
   const [targetWaypoint, setTargetWaypoint] = useState<[number, number] | null>(null);
 
   const [pins, setPins] = useState<any[]>([]);
   const [isDropMode, setIsDropMode] = useState(false);
   const [activePinType, setActivePinType] = useState('hazard');
+
+  // Refs for high-performance, synchronous animation tracking
+  const riderRef = useRef({
+    longitude: -122.4,
+    latitude: 37.8,
+    bearing: 0
+  });
 
   const fetchRoute = async (start: [number, number], end: [number, number]) => {
     try {
@@ -54,13 +69,6 @@ export default function MapControl() {
     }
     return null;
   };
-
-  // Refs for high-performance, synchronous animation tracking
-  const riderRef = useRef({
-    longitude: -122.4,
-    latitude: 37.8,
-    bearing: 0
-  });
 
   const animateRider = async (routeInfo: any) => {
     const { geometry, steps } = routeInfo;
@@ -99,7 +107,6 @@ export default function MapControl() {
       const elapsed = now - startTime;
       const progress = Math.min(elapsed / syncDuration, 1);
       
-      // Smoothly interpolate position and bearing
       const currentLon = startPos.longitude + (firstPoint[0] - startPos.longitude) * progress;
       const currentLat = startPos.latitude + (firstPoint[1] - startPos.latitude) * progress;
       
@@ -120,7 +127,7 @@ export default function MapControl() {
     requestAnimationFrame(syncLoop);
     
     // Wait for the sync animation to complete
-    await new Promise(r => setTimeout(r, syncDuration));
+    await new Promise(r => setTimeout(r, 2500));
 
     const step = () => {
       if (currentDist >= distanceMeter) {
@@ -134,7 +141,8 @@ export default function MapControl() {
         return;
       }
 
-      currentDist += travelSpeed;
+      // USE REF FOR REAL-TIME SPEED CHANGES (Ultra-Fine Multiplier)
+      currentDist += travelSpeedRef.current;
       const point = turf.along(line, currentDist, { units: 'kilometers' });
       const lookAheadDist = Math.min(currentDist + 0.005, distanceMeter);
       const nextPoint = turf.along(line, lookAheadDist, { units: 'kilometers' });
@@ -236,7 +244,7 @@ export default function MapControl() {
       };
       triggerMove();
     }
-  }, [isDevMode, targetWaypoint, isNavigating, riderPosition.longitude, riderPosition.latitude]);
+  }, [isDevMode, targetWaypoint, isNavigating]);
 
   if (!MAPBOX_TOKEN) {
     return (
@@ -375,9 +383,9 @@ export default function MapControl() {
                   <div className="p-4 bg-white/5 rounded-2xl border border-white/10 space-y-4 animate-in slide-in-from-top-4">
                     <div className="flex justify-between items-center px-1">
                       <p className="text-[9px] uppercase tracking-widest text-[#FF5D8F] font-bold">Travel Speed</p>
-                      <p className="text-[10px] font-mono text-white">{(travelSpeed * 10).toFixed(travelSpeed < 0.1 ? 2 : 1)}x</p>
+                      <p className="text-[10px] font-mono text-white">{travelSpeed.toFixed(4)}x</p>
                     </div>
-                    <input type="range" min="0.001" max="0.5" step="0.001" value={travelSpeed} onChange={(e) => setTravelSpeed(parseFloat(e.target.value))} className="w-full accent-[#FF5D8F]" />
+                    <input type="range" min="0.0005" max="0.5" step="0.0001" value={travelSpeed} onChange={(e) => setTravelSpeed(parseFloat(e.target.value))} className="w-full accent-[#FF5D8F]" />
                   </div>
                 )}
               </div>
