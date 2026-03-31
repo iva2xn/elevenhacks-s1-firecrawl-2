@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS pins (
   longitude REAL NOT NULL,
   latitude REAL NOT NULL,
   type TEXT NOT NULL,
-  text TEXT NOT NULL,
+  text TEXT NOT NULL, title TEXT, summary TEXT,
   author TEXT,
   timestamp INTEGER NOT NULL
 );

@@ -57,41 +57,78 @@ export default {
         const body: any = await request.json();
         const { longitude, latitude, text, author, audio_id = null } = body;
 
-        // Perform AI Classification using Workers AI (Llama 3)
-        let pinType = 'scenic'; // default
+        // Perform AI Classification & Content Generation
+        let pinType = 'scenic';
+        let pinTitle = 'Voice Note';
+        let pinSummary = '';
+
+        const authorName = author && author !== 'Anonymous' && author !== 'Rider' ? author : 'your friend';
+
+        // --- AI Call 1: Classify the pin type ---
         try {
-          const aiPrompt = `Categorize the following message for a motorcyclist. 
-          Return ONLY ONE WORD from this list: HAZARD, FRIEND, SCENIC.
-          Message: "${text}"`;
-
-          const aiResponse: any = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
-            prompt: aiPrompt,
+          const typeRes: any = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+            prompt: `Classify this message into exactly one category. Reply with ONLY the single word: HAZARD, FRIEND, or SCENIC. Nothing else.\nMessage: "${text}"`
           });
-
-          const resultText = aiResponse.response.trim().toUpperCase();
-          if (resultText.includes('HAZARD')) pinType = 'hazard';
-          else if (resultText.includes('FRIEND')) pinType = 'friend';
+          const t = typeRes.response.trim().toUpperCase();
+          if (t.includes('HAZARD')) pinType = 'hazard';
+          else if (t.includes('FRIEND')) pinType = 'friend';
           else pinType = 'scenic';
-        } catch (aiErr) {
-          console.error('AI Classification failed', aiErr);
+        } catch (e) {
+          console.error('Type classification failed', e);
+        }
+
+        // --- AI Call 2: Generate a SHORT title (2-4 words max) ---
+        try {
+          const titleRes: any = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+            prompt: `Create a 2-4 word title for this message. Reply with ONLY the title, no punctuation, no quotes, no explanation.\nMessage: "${text}"\nTitle:`
+          });
+          pinTitle = titleRes.response.trim().replace(/^["'\s]+|["'\s]+$/g, '').split('\n')[0].trim();
+          if (!pinTitle || pinTitle.length > 50) pinTitle = 'Voice Note';
+        } catch (e) {
+          console.error('Title generation failed', e);
+        }
+
+        // --- AI Call 3: Generate a friendly summary ---
+        try {
+          const summaryRes: any = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+            prompt: `Summarize this message in one short friendly sentence (under 15 words) starting with "Hey, ${authorName}". Do not repeat—paraphrase it.\nMessage: "${text}"\nSummary:`
+          });
+          pinSummary = summaryRes.response.trim().replace(/^["'\s]+|["'\s]+$/g, '').split('\n')[0].trim();
+          if (!pinSummary) pinSummary = `Hey, ${authorName} left a voice message here.`;
+        } catch (e) {
+          console.error('Summary generation failed', e);
+          pinSummary = `Hey, ${authorName} left a voice message here.`;
         }
 
         const id = crypto.randomUUID();
         const timestamp = Date.now();
 
+        console.log('Final Data to Store:', { id, pinType, pinTitle, pinSummary });
+
         await env.DB.prepare(
-          'INSERT INTO pins (id, longitude, latitude, type, text, author, timestamp, audio_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO pins (id, longitude, latitude, type, text, author, timestamp, audio_id, title, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )
-          .bind(id, longitude, latitude, pinType, text, author || 'Anonymous', timestamp, audio_id)
+          .bind(id, longitude, latitude, pinType, text, author || 'Anonymous', timestamp, audio_id, pinTitle, pinSummary)
           .run();
 
-        return new Response(JSON.stringify({ id, type: pinType, text, longitude, latitude, timestamp, audio_id }), {
+        return new Response(JSON.stringify({ 
+          id, 
+          type: pinType, 
+          text, 
+          title: pinTitle, 
+          summary: pinSummary, 
+          longitude, 
+          latitude, 
+          timestamp, 
+          audio_id,
+          author: author || 'Anonymous'
+        }), {
           status: 201,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         });
-      } catch (err) {
-        return new Response(JSON.stringify({ error: 'Error creating pin', details: err }), {
-          status: 400,
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
           headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
         });
       }
