@@ -44,3 +44,23 @@ next-env.d.ts
 # worker
 worker/node_modules
 worker/.dev.vars
+worker/.wrangler
+worker/dist
+
+# antigravity
+.gemini
+_agent*
+.agents/
+.agent/
+_agents/
+.gemini_agent/
+.system_generated/
+knowledge/
+brain/
+artifacts/
+tmp/
+*.webp
+*.mp4
+*.png
+*.jpg
+*.jpeg

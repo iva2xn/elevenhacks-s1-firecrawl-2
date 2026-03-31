@@ -1,7 +1,7 @@
 # Project Overview
 
 ## The Elevator Pitch
-This project is a screen-free, location-based audio social network for motorcyclists and travelers. Instead of requiring users to interact with a screen or managing audio clutter, the system acts as an AI Co-Pilot that lives in the user's helmet. It seamlessly ducks background music to dynamically summarize local hazards, filter out noise, and play geolocated voice messages from friends in their cloned voices as they ride past specific locations.
+This project is a screen-free, location-based audio social network for motorcyclists and travelers. Instead of requiring users to interact with a screen or managing audio clutter, the system acts as an AI Co-Pilot that lives in the user's helmet. It seamlessly ducks background music to dynamically summarize local hazards, filter out noise, and play geolocated voice messages from friends in their actual voices as they ride past specific locations.
 
 ## Technical Architecture
 
@@ -13,8 +13,8 @@ This project is a screen-free, location-based audio social network for motorcycl
 *   **Cloudflare Agents:** Acts as the curator. When a user enters a zone, the Agent fetches relevant messages based on user preferences and generates a custom audio summary script.
 
 ### ElevenLabs (Voice & Delivery)
-*   **Text-to-Speech (TTS):** Delivers the AI Co-Pilot's generated summaries using premium, natural-sounding voices engineered to be clear even over wind noise.
-*   **Voice Cloning:** Enhances the social experience by reading messages from friends in their own cloned voices, providing a deeply personal connection during the journey.
+*   **Text-to-Speech (TTS):** Delivers the AI Co-Pilot's generated summaries using premium, natural-sounding voices (ElevenLabs) engineered to be clear even over wind noise.
+*   **Actual Voice Playback:** Enhances the social experience by playing original voice recordings from friends, providing a deeply personal and authentic connection during the journey.
 
 ## Core Features
 *   **Audio Ducking:** Automatically lowers music volume (Spotify/Apple Music) to play AI summaries and friend messages before fading it back up.
@@ -39,7 +39,7 @@ For a full breakdown, see [ROADMAP.md](./ROADMAP.md).
 ### Phase 3: Premium Audio Delivery
 *   [ ] **ElevenLabs TTS**: Convert message text into clear, premium audio in the browser.
 *   [ ] **Agent Summarization**: Use Cloudflare Agents to group multiple nearby hazards into a single 5-second summary.
-*   [ ] **Social Voice Cloning**: Assign friend pins to specific cloned voices for personal delivery.
+*   [ ] **Social Audio Clips**: Implement recording and storage for friend messages to play back their actual voice.
 *   *Verification: Does the correct voice play when the rider "hits" a geofence?*
 
 ### Phase 4: Full Simulation & Recording

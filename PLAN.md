@@ -57,11 +57,14 @@ This plan breaks down the development into logical stages. **I will only work on
 ## Stage 3: Audio Engine & ElevenLabs
 *Goal: The voice of the AI Co-Pilot.*
 
-- [ ] **Step 3.1: ElevenLabs TTS Implementation**
-    - Basic "Speak" button on pins to test ElevenLabs.
-    - *Verification: Do we hear the premium audio when clicking a pin?*
-- [ ] **Step 3.2: Dynamic Scripting**
-    - Cloudflare Agent to summarize multiple pins into one script.
+- [ ] **Step 3.1: ElevenLabs AI Summary Delivery**
+    - Basic "Speak" button on hazard/scenic pins to test ElevenLabs TTS.
+    - *Verification: Do we hear premium AI voice for generated scripts?*
+- [ ] **Step 3.2: Social Audio Messages**
+    - Implement audio recording/upload (Cloudflare R2) for friend messages.
+    - *Verification: Can we record a voice clip and play it back on the pin?*
+- [ ] **Step 3.3: Dynamic Scripting**
+    - Cloudflare Agent to summarize multiple hazard pins into one AI script for TTS.
     - *Verification: If 3 pins are nearby, does the AI generate a single summary script?*
 
 ---

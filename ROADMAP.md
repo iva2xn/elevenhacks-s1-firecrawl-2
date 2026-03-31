@@ -40,9 +40,9 @@ This roadmap breaks down the development of the screen-free, location-based audi
     - Create a "Summary Engine" using Cloudflare Workers AI.
     - It should combine multiple messages in a zone into a single 5-second script.
     - *Test: Passing 3 hazard messages results in a single coherent script.*
-- [ ] **Step 3.3: Voice Cloning for Social**
-    - (Optional/MVP) Set up a few preset "Cloned Voices" for testing simulated friends.
-    - *Test: Different messages play in different voices.*
+- [ ] **Step 3.3: Social Audio Recording**
+    - Integrate audio recording and Cloudflare R2 storage for friend messages.
+    - *Test: Record a clip on the "Friend" pin and play it back successfully.*
 
 ## Phase 4: Geographic Intelligence & Simulation Loop
 *Goal: Automate the experience for the presentation.*

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import Map, { Marker, Source, Layer, MapRef } from 'react-map-gl/mapbox';
+import Map, { Marker, Source, Layer, MapRef, Popup } from 'react-map-gl/mapbox';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import * as turf from '@turf/turf';
 
@@ -43,7 +43,16 @@ export default function MapControl() {
 
   const [pins, setPins] = useState<any[]>([]);
   const [isDropMode, setIsDropMode] = useState(false);
-  const [activePinType, setActivePinType] = useState('hazard');
+  const [selectedPin, setSelectedPin] = useState<any | null>(null);
+  const [isPlaying, setIsPlaying] = useState<string | null>(null);
+  const [visitedPins, setVisitedPins] = useState<Set<string>>(new Set());
+  const [isCreatingPin, setIsCreatingPin] = useState<{ lng: number, lat: number } | null>(null);
+  const [recordingState, setRecordingState] = useState<'idle' | 'recording' | 'preview' | 'transcribing' | 'finished'>('idle');
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [uploadedAudio_id, setUploadedAudio_id] = useState<string | null>(null);
+  const [newPinText, setNewPinText] = useState('');
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
   const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_API_URL || 'http://localhost:8787';
 
@@ -216,43 +225,185 @@ export default function MapControl() {
 
     requestAnimationFrame(step);
   };
+  
+  const playVoice = async (id: string, text: string, type: 'ai' | 'original', audioId?: string) => {
+    if (isPlaying) return;
+    setIsPlaying(id + '-' + type);
+    try {
+      let audioUrl: string;
+      
+      if (type === 'original' && audioId) {
+        // Play ACTUAL voice from R2
+        audioUrl = `${WORKER_URL}/api/audio/${audioId}`;
+        console.log('🔗 Playing original voice from R2:', audioUrl);
+      } else {
+        // Play AI voice from ElevenLabs proxy
+        const resp = await fetch(`/api/tts`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text })
+        });
+        
+        if (!resp.ok) {
+          const errorData = await resp.json();
+          throw new Error(errorData.error || 'TTS failed');
+        }
+        
+        const blob = await resp.blob();
+        audioUrl = URL.createObjectURL(blob);
+      }
+      
+      const audio = new Audio(audioUrl);
+      audio.onended = () => setIsPlaying(null);
+      await audio.play();
+    } catch (err) {
+      console.error('Audio playback failed', err);
+      setIsPlaying(null);
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream);
+      const chunks: BlobPart[] = [];
+      
+      recorder.ondataavailable = (e) => chunks.push(e.data);
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: 'audio/mpeg' });
+        setAudioBlob(blob);
+        setPreviewUrl(URL.createObjectURL(blob));
+        setRecordingState('preview');
+      };
+      
+      recorder.start();
+      mediaRecorderRef.current = recorder;
+      setRecordingState('recording');
+    } catch (err) {
+      console.error('Recording failed', err);
+    }
+  };
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop();
+    mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
+  };
+
+  const handleCreatePin = async () => {
+    if (!isCreatingPin || !audioBlob) return;
+    setRecordingState('transcribing');
+
+    let audio_id = null;
+    let transcription = '';
+
+    // 1. Upload audio & Get transcription (ONE STEP)
+    try {
+      const uploadResp = await fetch(`${WORKER_URL}/api/upload`, {
+        method: 'POST',
+        body: audioBlob
+      });
+      if (uploadResp.ok) {
+        const data = await uploadResp.json();
+        audio_id = data.audio_id;
+        transcription = data.transcription;
+        console.log('✅ Audio uploaded to R2, ID:', audio_id);
+      }
+    } catch (err) {
+      console.error('Final upload failed', err);
+    }
+
+    // 2. Create the pin
+    const pinRequest = {
+      longitude: isCreatingPin.lng,
+      latitude: isCreatingPin.lat,
+      text: transcription || 'Voice Message',
+      author: 'Rider',
+      audio_id: audio_id
+    };
+
+    try {
+      const resp = await fetch(`${WORKER_URL}/api/pins`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(pinRequest)
+      });
+      
+      if (resp.ok) {
+        const savedPin = await resp.json();
+        setPins(prev => [...prev, savedPin]);
+      }
+    } catch (err) {
+      console.error('Failed to save pin', err);
+    }
+
+    setIsCreatingPin(null);
+    setAudioBlob(null);
+    setPreviewUrl(null);
+    setUploadedAudio_id(null);
+    setRecordingState('idle');
+  };
+
+  const handleSummarize = async () => {
+    if (pins.length === 0 || isPlaying) return;
+    setIsPlaying('summary');
+    
+    try {
+      // 1. Get the summary script from Worker AI
+      const sumResp = await fetch(`${WORKER_URL}/api/summarize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pins })
+      });
+      
+      if (!sumResp.ok) {
+        const errorData = await sumResp.json();
+        throw new Error(errorData.error || 'Summarization failed');
+      }
+      const { script } = await sumResp.json();
+      
+      // 2. Play it via ElevenLabs
+      const resp = await fetch(`/api/tts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: script })
+      });
+      
+      if (!resp.ok) throw new Error('TTS failed');
+      const audioBlob = await resp.blob();
+      const audio = new Audio(URL.createObjectURL(audioBlob));
+      audio.onended = () => setIsPlaying(null);
+      await audio.play();
+    } catch (err) {
+      console.error('Regional summary failed', err);
+      setIsPlaying(null);
+    }
+  };
+
+  // 🛰️ PROXIMITY ENGINE: Auto-trigger audio when near pins
+  useEffect(() => {
+    if (isPlaying || pins.length === 0) return;
+
+    for (const pin of pins) {
+      if (visitedPins.has(pin.id)) continue;
+
+      const riderPoint = turf.point([riderPosition.longitude, riderPosition.latitude]);
+      const pinPoint = turf.point([pin.longitude, pin.latitude]);
+      const distance = turf.distance(riderPoint, pinPoint, { units: 'meters' });
+
+      // Trigger zone: 100 meters
+      if (distance < 100) {
+        setVisitedPins(prev => new Set(prev).add(pin.id));
+        playVoice(pin.id, pin.text, pin.audio_id);
+        break; // Only play one at a time
+      }
+    }
+  }, [riderPosition, pins, visitedPins, isPlaying]);
 
   const handleMapClick = async (evt: any) => {
     const { lng, lat } = evt.lngLat;
     
     if (isDropMode) {
-      const userText = window.prompt('Enter pin details (AI will classify this):', activePinType === 'hazard' ? 'Hazard detected' : 'Friend signal here');
-      
-      if (!userText) {
-        setIsDropMode(false);
-        return;
-      }
-
-      const pinRequest = {
-        longitude: lng,
-        latitude: lat,
-        text: userText,
-        author: 'Rider'
-      };
-
-      try {
-        const resp = await fetch(`${WORKER_URL}/api/pins`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(pinRequest)
-        });
-        
-        if (resp.ok) {
-          const savedPin = await resp.json();
-          setPins(prev => [...prev, savedPin]);
-        } else {
-          // Fallback if worker isn't running
-          setPins(prev => [...prev, { ...pinRequest, id: Date.now(), type: activePinType }]);
-        }
-      } catch (err) {
-        // Fallback for local simulation
-        setPins(prev => [...prev, { ...pinRequest, id: Date.now(), type: activePinType }]);
-      }
+      setIsCreatingPin({ lng, lat });
       setIsDropMode(false);
     } else {
       if (isNavigating) return;
@@ -381,14 +532,197 @@ export default function MapControl() {
         </Marker>
 
         {pins.map(pin => (
-          <Marker key={pin.id} longitude={pin.longitude} latitude={pin.latitude} anchor="bottom">
-            <svg viewBox="0 0 100 100" className="w-10 h-10 drop-shadow-2xl transition-transform hover:scale-110">
-              <path d="M50 0 C30 0 15 15 15 35 C15 60 50 100 50 100 C50 100 85 60 85 35 C85 15 70 0 50 0 Z" fill={pin.type === 'hazard' ? '#FF5D8F' : '#C084FC'} />
-              <circle cx="50" cy="35" r="10" fill="white" fillOpacity="0.8" />
-            </svg>
+          <Marker 
+            key={pin.id} 
+            longitude={pin.longitude} 
+            latitude={pin.latitude} 
+            anchor="bottom"
+            onClick={(e) => {
+              e.originalEvent.stopPropagation();
+              setSelectedPin(pin);
+            }}
+          >
+            <div className="cursor-pointer">
+              <svg viewBox="0 0 100 100" className={`w-10 h-10 drop-shadow-2xl transition-all duration-300 ${selectedPin?.id === pin.id ? 'scale-125' : 'hover:scale-110'}`}>
+                <path d="M50 0 C30 0 15 15 15 35 C15 60 50 100 50 100 C50 100 85 60 85 35 C85 15 70 0 50 0 Z" fill={pin.type === 'hazard' ? '#FF5D8F' : '#C084FC'} />
+                <circle cx="50" cy="35" r="10" fill="white" fillOpacity="0.8" />
+              </svg>
+            </div>
           </Marker>
         ))}
+
+        {selectedPin && (
+          <Popup
+            longitude={selectedPin.longitude}
+            latitude={selectedPin.latitude}
+            anchor="bottom"
+            onClose={() => setSelectedPin(null)}
+            closeButton={false}
+            className="pin-popup"
+            offset={45}
+          >
+            <div className="bg-[#0A0A0A]/95 backdrop-blur-2xl p-6 rounded-[2rem] border border-white/10 shadow-3xl w-64 animate-in zoom-in-95 fade-in-0 duration-300 overflow-hidden relative group">
+              <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[#FF5D8F] to-transparent opacity-50"></div>
+              
+              <div className="flex items-center justify-between mb-4">
+                <span className={`text-[9px] font-black uppercase tracking-[0.2em] px-2 py-1 rounded-md border ${selectedPin.type === 'hazard' ? 'bg-[#FF5D8F]/10 border-[#FF5D8F]/30 text-[#FF5D8F]' : 'bg-[#C084FC]/10 border-[#C084FC]/30 text-[#C084FC]'}`}>
+                  {selectedPin.type}
+                </span>
+                <span className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest">
+                  {new Date(selectedPin.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+              
+              <p className="text-white text-sm font-medium leading-relaxed mb-6">
+                "{selectedPin.text}"
+              </p>
+              
+              <div className="flex gap-2">
+                {selectedPin.audio_id && (
+                  <button
+                    onClick={() => playVoice(selectedPin.id, selectedPin.text, 'original', selectedPin.audio_id)}
+                    disabled={isPlaying !== null}
+                    className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-xl border transition-all duration-500 ${isPlaying === selectedPin.id + '-original' ? 'bg-[#FF5D8F] border-transparent text-white' : 'bg-white/5 border-white/10 text-white hover:bg-white/10'}`}
+                  >
+                    {isPlaying === selectedPin.id + '-original' ? (
+                       <div className="flex gap-1 items-center">
+                         <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse" />
+                         <span className="text-[10px] font-black uppercase">Playing</span>
+                       </div>
+                    ) : ( 
+                       <div className="flex items-center gap-2">
+                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                         <span className="text-[10px] font-black uppercase tracking-wider">Play</span>
+                       </div>
+                    )}
+                  </button>
+                )}
+
+                <button
+                  onClick={() => playVoice(selectedPin.id, selectedPin.text, 'ai')}
+                  disabled={isPlaying !== null}
+                  className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-xl border transition-all duration-300 ${isPlaying === selectedPin.id + '-ai' ? 'bg-[#FF5D8F] border-transparent text-white' : 'bg-white/5 border-white/10 text-white hover:bg-white/10 hover:border-white/20 disabled:opacity-50'}`}
+                >
+                  {isPlaying === selectedPin.id + '-ai' ? (
+                    <div className="flex gap-1 items-center">
+                       <span className="text-[10px] font-black uppercase animate-pulse">Summating...</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                       <span className="text-[10px] font-black uppercase tracking-wider">Summary</span>
+                    </div>
+                  )}
+                </button>
+              </div>
+            </div>
+          </Popup>
+        )}
       </Map>
+
+      {isCreatingPin && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-xl animate-in fade-in duration-300">
+          <div className="bg-[#0A0A0A] border border-white/10 w-full max-w-sm rounded-[3rem] shadow-4xl overflow-hidden animate-in zoom-in-95 slide-in-from-bottom-10 duration-500">
+            <div className="p-10 space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-white font-black text-2xl uppercase tracking-tighter">Record</h2>
+                  <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest mt-1">Aero Co-Pilot Voice Engine</p>
+                </div>
+                <button onClick={() => setIsCreatingPin(null)} className="p-2 -mr-2 text-zinc-600 hover:text-white transition-colors">
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+
+              <div className="h-48 bg-white/5 border border-white/10 rounded-[2.5rem] flex flex-col items-center justify-center p-8 text-center relative overflow-hidden transition-all duration-500">
+                {recordingState === 'idle' && (
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="w-16 h-16 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-zinc-600">
+                       <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                    </div>
+                    <p className="text-zinc-600 text-[10px] font-black uppercase tracking-widest">Ready to Capture</p>
+                  </div>
+                )}
+                
+                {recordingState === 'recording' && (
+                  <div className="flex flex-col items-center gap-6">
+                    <div className="flex gap-1.5 items-center h-12">
+                       {[...Array(6)].map((_, i) => (
+                         <div key={i} className="w-1.5 bg-[#FF5D8F] rounded-full animate-voice-3" style={{ height: '100%', animationDelay: `${i * 0.1}s` }} />
+                       ))}
+                    </div>
+                    <p className="text-[#FF5D8F] text-[10px] font-black uppercase tracking-[0.2em] animate-pulse">Recording Live</p>
+                  </div>
+                )}
+
+                {recordingState === 'preview' && (
+                  <div className="flex flex-col items-center gap-4">
+                    <button 
+                      onClick={() => { const a = new Audio(previewUrl!); a.play(); }}
+                      className="w-16 h-16 rounded-full bg-[#FF5D8F] text-white flex items-center justify-center shadow-lg shadow-[#FF5D8F]/20 hover:scale-110 active:scale-95 transition-all"
+                    >
+                       <svg className="w-6 h-6 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                    </button>
+                    <p className="text-[#FF5D8F] text-[10px] font-black uppercase tracking-widest">Preview Recording</p>
+                  </div>
+                )}
+
+                {recordingState === 'transcribing' && (
+                  <div className="flex flex-col items-center gap-4">
+                    <svg className="w-8 h-8 text-[#FF5D8F] animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M12 4V2m0 20v-2m8-8h2M2 12h2" /></svg>
+                    <p className="text-white text-[10px] font-black uppercase tracking-widest">AI Analysis</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex flex-col gap-3">
+                {recordingState === 'idle' ? (
+                  <button 
+                    onClick={startRecording}
+                    className="w-full py-6 bg-[#FF5D8F] hover:bg-[#FF7DA5] text-white font-black text-xs uppercase tracking-[0.2em] rounded-[2rem] transition-all shadow-2xl shadow-[#FF5D8F]/20 active:scale-95"
+                  >
+                    Start Recording
+                  </button>
+                ) : recordingState === 'recording' ? (
+                  <button 
+                    onClick={stopRecording}
+                    className="w-full py-6 bg-white text-black font-black text-xs uppercase tracking-[0.2em] rounded-[2rem] transition-all shadow-2xl active:scale-95"
+                  >
+                    Stop & Listen
+                  </button>
+                ) : (
+                  <>
+                    <button 
+                      onClick={handleCreatePin}
+                      className="w-full py-6 bg-[#FF5D8F] text-white hover:bg-[#FF7DA5] font-black text-xs uppercase tracking-[0.2em] rounded-[2rem] transition-all shadow-2xl shadow-[#FF5D8F]/20 active:scale-95"
+                    >
+                      Confirm Drop
+                    </button>
+                    <button 
+                      onClick={() => { setAudioBlob(null); setPreviewUrl(null); setRecordingState('idle'); }}
+                      className="w-full py-4 text-zinc-600 hover:text-white transition-all font-black text-[9px] uppercase tracking-widest"
+                    >
+                      Delete & Restart
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main UI Controls: Bottom Right */}
+      <div className="absolute bottom-10 right-10 z-20 flex flex-col items-end gap-6 pointer-events-none">
+        <button 
+          onClick={() => setIsDropMode(!isDropMode)} 
+          className={`pointer-events-auto h-14 w-14 flex items-center justify-center rounded-2xl shadow-2xl transition-all duration-500 active:scale-95 group relative ${isDropMode ? 'bg-white text-black rotate-45' : 'bg-[#FF5D8F] text-white hover:bg-[#FF7DA5]'}`}
+        >
+          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3.5">
+            <path d="M12 4v16m8-8H4" />
+          </svg>
+        </button>
+      </div>
 
       {!isSidebarOpen && (
         <div className="absolute top-6 right-6 z-20 animate-in zoom-in-50 duration-500">
@@ -441,18 +775,28 @@ export default function MapControl() {
               </div>
               <div className="space-y-3">
                 <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold px-1 text-[9px]">Simulation Layer</p>
+                
+                <button 
+                  onClick={handleSummarize} 
+                  disabled={pins.length === 0 || isPlaying !== null}
+                  className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${isPlaying === 'summary' ? 'bg-[#C084FC] text-white border-white/20' : 'bg-white/5 border-white/10 text-zinc-400 disabled:opacity-30'}`}
+                >
+                  <div className="flex items-center gap-3">
+                    {isPlaying === 'summary' ? (
+                       <svg className="w-5 h-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                    ) : (
+                       <svg className="w-5 h-5 opacity-80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0012 18.75c-1.03 0-1.9-.4-2.524-1.047l-.548-.547z" /></svg>
+                    )}
+                    <span className="font-bold text-xs uppercase">{isPlaying === 'summary' ? 'Co-Pilot Thinking...' : 'Region Summary'}</span>
+                  </div>
+                </button>
+
                 <button onClick={() => setIsDropMode(!isDropMode)} className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${isDropMode ? 'bg-[#FF5D8F] text-white border-white/20' : 'bg-white/5 border-white/10 text-zinc-400'}`}>
                   <div className="flex items-center gap-3">
                     <svg className="w-5 h-5 opacity-80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                     <span className="font-bold text-xs uppercase">Drop Marker</span>
                   </div>
                 </button>
-                {isDropMode && (
-                  <div className="flex gap-2 animate-in zoom-in-95 duration-200">
-                    <button onClick={() => setActivePinType('hazard')} className={`flex-1 py-3 rounded-xl border text-[9px] font-black uppercase transition-all ${activePinType === 'hazard' ? 'bg-[#FF5D8F]/20 border-[#FF5D8F] text-[#FF5D8F]' : 'bg-white/5 border-white/10 text-zinc-600'}`}>Hazard</button>
-                    <button onClick={() => setActivePinType('friend')} className={`flex-1 py-3 rounded-xl border text-[9px] font-black uppercase transition-all ${activePinType === 'friend' ? 'bg-[#C084FC]/20 border-[#C084FC] text-[#C084FC]' : 'bg-white/5 border-white/10 text-zinc-600'}`}>Friend</button>
-                  </div>
-                )}
               </div>
             </div>
           </div>
