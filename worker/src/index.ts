@@ -60,9 +60,8 @@ export default {
         // Perform AI Classification & Content Generation
         let pinType = 'scenic';
         let pinTitle = 'Voice Note';
-        let pinSummary = '';
 
-        const authorName = author && author !== 'Anonymous' && author !== 'Rider' ? author : 'your friend';
+        const authorName = author && author !== 'Anonymous' && author !== 'Rider' ? author : null;
 
         // --- AI Call 1: Classify the pin type ---
         try {
@@ -88,38 +87,25 @@ export default {
           console.error('Title generation failed', e);
         }
 
-        // --- AI Call 3: Generate a friendly summary ---
-        try {
-          const summaryRes: any = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
-            prompt: `Summarize this message in one short friendly sentence (under 15 words) starting with "Hey, ${authorName}". Do not repeat—paraphrase it.\nMessage: "${text}"\nSummary:`
-          });
-          pinSummary = summaryRes.response.trim().replace(/^["'\s]+|["'\s]+$/g, '').split('\n')[0].trim();
-          if (!pinSummary) pinSummary = `Hey, ${authorName} left a voice message here.`;
-        } catch (e) {
-          console.error('Summary generation failed', e);
-          pinSummary = `Hey, ${authorName} left a voice message here.`;
-        }
-
         const id = crypto.randomUUID();
         const timestamp = Date.now();
 
-        console.log('Final Data to Store:', { id, pinType, pinTitle, pinSummary });
+        console.log('Final Data to Store:', { id, pinType, pinTitle });
 
         await env.DB.prepare(
           'INSERT INTO pins (id, longitude, latitude, type, text, author, timestamp, audio_id, title, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )
-          .bind(id, longitude, latitude, pinType, text, author || 'Anonymous', timestamp, audio_id, pinTitle, pinSummary)
+          .bind(id, longitude, latitude, pinType, text, author || 'Anonymous', timestamp, audio_id, pinTitle, null)
           .run();
 
-        return new Response(JSON.stringify({ 
-          id, 
-          type: pinType, 
-          text, 
-          title: pinTitle, 
-          summary: pinSummary, 
-          longitude, 
-          latitude, 
-          timestamp, 
+        return new Response(JSON.stringify({
+          id,
+          type: pinType,
+          text,
+          title: pinTitle,
+          longitude,
+          latitude,
+          timestamp,
           audio_id,
           author: author || 'Anonymous'
         }), {
@@ -173,45 +159,12 @@ export default {
       }
     }
 
-    // POST /api/summarize - Use AI to group pins into a single script
-    if (request.method === 'POST' && pathname === '/api/summarize') {
-      try {
-        const { pins } = (await request.json()) as any;
-        if (!pins || pins.length === 0) return new Response('No pins shared', { status: 400 });
 
-        const messageData = pins.map((p: any) => `[${p.type.toUpperCase()}]: ${p.text}`).join('\n');
-
-        const summaryPrompt = `You are a premium AI Co-Pilot for a motorcyclist. 
-        Summarize the following reports into ONE concise, professional 5-10 second announcement.
-        Focus on safety first. Keep it extremely brief for a rider at speed.
-        
-        REPORTS:
-        ${messageData}
-        
-        ANNOUNCEMENT:`;
-
-        const aiResponse: any = await env.AI.run('@cf/meta/llama-2-7b-chat-int8', {
-          prompt: summaryPrompt,
-          max_tokens: 60
-        });
-
-        const script = aiResponse.response.trim().replace(/^"/, '').replace(/"$/, '');
-
-        return new Response(JSON.stringify({ script }), {
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-        });
-      } catch (err: any) {
-        return new Response(JSON.stringify({ error: 'Summarization failed', details: err.message }), {
-          status: 500,
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-        });
-      }
-    }
 
     // POST /api/tts - Convert text to speech via ElevenLabs
     if (request.method === 'POST' && pathname === '/api/tts') {
       try {
-        const { text, voiceId = '21m00Tcm4TlvDq8ikWAM' } = (await request.json()) as any; // Default: 'Rachel'
+        const { text, voiceId = '21m00Tcm4TlvDq8ikWAM' } = (await request.json()) as any; // Reverted to original 'Rachel' but staying on Turbo v2.5 API
 
         const response = await fetch(
           `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
@@ -223,8 +176,8 @@ export default {
             },
             body: JSON.stringify({
               text,
-              model_id: 'eleven_monolingual_v1',
-              voice_settings: { stability: 0.5, similarity_boost: 0.5 },
+              model_id: 'eleven_turbo_v2_5',
+              voice_settings: { stability: 0.45, similarity_boost: 0.8 },
             }),
           }
         );

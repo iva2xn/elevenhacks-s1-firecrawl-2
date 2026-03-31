@@ -344,41 +344,7 @@ export default function MapControl() {
     setRecordingState('idle');
   };
 
-  const handleSummarize = async () => {
-    if (pins.length === 0 || isPlaying) return;
-    setIsPlaying('summary');
-    
-    try {
-      // 1. Get the summary script from Worker AI
-      const sumResp = await fetch(`${WORKER_URL}/api/summarize`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pins })
-      });
-      
-      if (!sumResp.ok) {
-        const errorData = await sumResp.json();
-        throw new Error(errorData.error || 'Summarization failed');
-      }
-      const { script } = await sumResp.json();
-      
-      // 2. Play it via ElevenLabs
-      const resp = await fetch(`/api/tts`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: script })
-      });
-      
-      if (!resp.ok) throw new Error('TTS failed');
-      const audioBlob = await resp.blob();
-      const audio = new Audio(URL.createObjectURL(audioBlob));
-      audio.onended = () => setIsPlaying(null);
-      await audio.play();
-    } catch (err) {
-      console.error('Regional summary failed', err);
-      setIsPlaying(null);
-    }
-  };
+
 
   // 🛰️ PROXIMITY ENGINE: Auto-trigger audio when near pins
   useEffect(() => {
@@ -398,7 +364,7 @@ export default function MapControl() {
         if (pin.audio_id) {
           playVoice(pin.id, pin.text, 'original', pin.audio_id);
         } else {
-          playVoice(pin.id, pin.summary || pin.text, 'ai');
+          playVoice(pin.id, pin.text, 'ai');
         }
         break; // Only play one at a time
       }
@@ -583,41 +549,22 @@ export default function MapControl() {
                 {selectedPin.title && selectedPin.title.length < 50 ? selectedPin.title : (selectedPin.text.length > 30 ? selectedPin.text.substring(0, 30) + '...' : selectedPin.text)}
               </h3>
               
-              <div className="flex gap-2">
-                {selectedPin.audio_id && (
-                  <button
-                    onClick={() => playVoice(selectedPin.id, selectedPin.text, 'original', selectedPin.audio_id)}
-                    disabled={isPlaying !== null}
-                    className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl border transition-all duration-500 ${isPlaying === selectedPin.id + '-original' ? 'bg-[#FF5D8F] border-transparent text-white' : 'bg-white/5 border-white/10 text-white hover:bg-white/10'}`}
-                  >
-                    {isPlaying === selectedPin.id + '-original' ? (
-                       <div className="flex gap-1 items-center">
-                         <div className="w-1.2 h-1.2 bg-white rounded-full animate-bounce" />
-                         <span className="text-[10px] font-black uppercase">Playing</span>
-                       </div>
-                    ) : ( 
-                       <div className="flex items-center gap-2">
-                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                         <span className="text-[10px] font-black uppercase tracking-wider">Play</span>
-                       </div>
-                    )}
-                  </button>
-                )}
-
+              <div className="flex">
                 <button
-                  onClick={() => playVoice(selectedPin.id, selectedPin.summary || selectedPin.text, 'ai')}
+                  onClick={() => playVoice(selectedPin.id, selectedPin.text, selectedPin.audio_id ? 'original' : 'ai', selectedPin.audio_id)}
                   disabled={isPlaying !== null}
-                  className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl border transition-all duration-300 ${isPlaying === selectedPin.id + '-ai' ? 'bg-[#FF5D8F] border-transparent text-white' : 'bg-white/5 border-white/10 text-white hover:bg-white/10 hover:border-white/20 disabled:opacity-50'}`}
+                  className={`w-full flex items-center justify-center gap-3 py-4 rounded-2xl border transition-all duration-500 ${isPlaying?.startsWith(selectedPin.id) ? 'bg-[#FF5D8F] border-transparent text-white' : 'bg-white/5 border-white/10 text-white hover:bg-white/10'}`}
                 >
-                  {isPlaying === selectedPin.id + '-ai' ? (
-                    <div className="flex gap-1 items-center">
-                       <span className="text-[10px] font-black uppercase animate-pulse">Summary...</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2">
-                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-                       <span className="text-[10px] font-black uppercase tracking-wider">Summary</span>
-                    </div>
+                  {isPlaying?.startsWith(selectedPin.id) ? (
+                     <div className="flex gap-1 items-center">
+                       <div className="w-1.2 h-1.2 bg-white rounded-full animate-bounce" />
+                       <span className="text-[10px] font-black uppercase">Playing</span>
+                     </div>
+                  ) : ( 
+                     <div className="flex items-center gap-2">
+                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                       <span className="text-[10px] font-black uppercase tracking-wider">Play</span>
+                     </div>
                   )}
                 </button>
               </div>
@@ -627,9 +574,9 @@ export default function MapControl() {
       </Map>
 
       {isCreatingPin && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/80 animate-in fade-in duration-300">
-          <div className="bg-[#0A0A0A] border border-white/10 w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 slide-in-from-bottom-10 duration-500">
-            <div className="p-8 space-y-6">
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#0A0A0A] border border-white/10 w-full max-w-sm rounded-2xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-98 duration-200">
+            <div className="p-8 space-y-8">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-white font-black text-xl uppercase tracking-tighter">Record</h2>
@@ -640,41 +587,46 @@ export default function MapControl() {
                 </button>
               </div>
 
-              <div className="h-40 bg-zinc-900/50 border border-white/5 rounded-2xl flex flex-col items-center justify-center p-6 text-center relative overflow-hidden transition-all duration-500">
+              <div className="flex flex-col items-center justify-center py-4 text-center">
                 {recordingState === 'idle' && (
-                  <div className="flex flex-col items-center gap-3">
-                    <div className="w-14 h-14 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-zinc-600">
-                       <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
+                  <div className="flex flex-col items-center gap-4">
+                    <div className="w-20 h-20 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-zinc-500">
+                       <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5-3c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg>
                     </div>
-                    <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Ready to Capture</p>
+                    <div>
+                      <p className="text-white font-black text-lg uppercase tracking-tight">Ready</p>
+                      <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Tap below to start</p>
+                    </div>
                   </div>
                 )}
                 
                 {recordingState === 'recording' && (
                   <div className="flex flex-col items-center gap-4">
-                    <div className="flex items-center justify-center w-14 h-14 rounded-full bg-[#FF5D8F]/20 animate-pulse">
-                      <div className="w-6 h-6 bg-[#FF5D8F] rounded-full" />
+                    <div className="flex items-center justify-center w-20 h-20 rounded-full bg-[#FF5D8F]/10 border border-[#FF5D8F]/30">
+                      <div className="w-8 h-8 bg-[#FF5D8F] rounded-full shadow-[0_0_20px_rgba(255,93,143,0.5)]" />
                     </div>
-                    <p className="text-[#FF5D8F] text-[10px] font-bold uppercase tracking-widest">Recording Live</p>
+                    <p className="text-[#FF5D8F] font-black text-lg uppercase tracking-tight">Recording...</p>
                   </div>
                 )}
-
+ 
                 {recordingState === 'preview' && (
                   <div className="flex flex-col items-center gap-4">
                     <button 
                       onClick={() => { const a = new Audio(previewUrl!); a.play(); }}
-                      className="w-14 h-14 rounded-full bg-[#FF5D8F] text-white flex items-center justify-center shadow-lg shadow-[#FF5D8F]/20 hover:scale-110 active:scale-95 transition-all"
+                      className="w-20 h-20 rounded-full bg-[#FF5D8F] text-white flex items-center justify-center shadow-xl shadow-[#FF5D8F]/20 hover:scale-105 active:scale-95 transition-all"
                     >
-                       <svg className="w-6 h-6 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                       <svg className="w-8 h-8 translate-x-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                     </button>
-                    <p className="text-[#FF5D8F] text-[10px] font-bold uppercase tracking-widest">Preview Recording</p>
+                    <p className="text-[#FF5D8F] font-black text-lg uppercase tracking-tight">Review Audio</p>
                   </div>
                 )}
-
+ 
                 {recordingState === 'transcribing' && (
                   <div className="flex flex-col items-center gap-4">
-                    <svg className="w-8 h-8 text-[#FF5D8F] animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M12 4V2m0 20v-2m8-8h2M2 12h2" /></svg>
-                    <p className="text-white text-[10px] font-bold uppercase tracking-widest">AI Analysis</p>
+                    <div className="w-20 h-20 rounded-full border-2 border-dashed border-[#FF5D8F]/50 animate-spin flex items-center justify-center">
+                      <svg className="w-8 h-8 text-[#FF5D8F]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M12 4V2m0 20v-2m8-8h2M2 12h2" /></svg>
+                    </div>
+                    <p className="text-white font-black text-lg uppercase tracking-tight">Processing</p>
                   </div>
                 )}
               </div>
@@ -780,20 +732,7 @@ export default function MapControl() {
               <div className="space-y-3">
                 <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold px-1 text-[9px]">Simulation Layer</p>
                 
-                <button 
-                  onClick={handleSummarize} 
-                  disabled={pins.length === 0 || isPlaying !== null}
-                  className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${isPlaying === 'summary' ? 'bg-[#FF5D8F] text-white border-white/20' : 'bg-white/5 border-white/10 text-zinc-400 disabled:opacity-30'}`}
-                >
-                  <div className="flex items-center gap-3">
-                    {isPlaying === 'summary' ? (
-                       <svg className="w-5 h-5 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
-                    ) : (
-                       <svg className="w-5 h-5 opacity-80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0012 18.75c-1.03 0-1.9-.4-2.524-1.047l-.548-.547z" /></svg>
-                    )}
-                    <span className="font-bold text-xs uppercase">{isPlaying === 'summary' ? 'Co-Pilot Thinking...' : 'Region Summary'}</span>
-                  </div>
-                </button>
+
 
                 <button onClick={() => setIsDropMode(!isDropMode)} className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${isDropMode ? 'bg-[#FF5D8F] text-white border-white/20' : 'bg-white/5 border-white/10 text-zinc-400'}`}>
                   <div className="flex items-center gap-3">
