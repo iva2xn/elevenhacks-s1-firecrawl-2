@@ -9,3 +9,7 @@ database_id = "83d82329-d5c0-4e28-a36d-4816994a5fb3"
 
 [ai]
 binding = "AI"
+
+[[r2_buckets]]
+binding = "aero_audio_clips"
+bucket_name = "aero-audio-clips"
