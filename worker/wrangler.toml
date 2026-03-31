@@ -1,0 +1,11 @@
+name = "aero-copilot-backend"
+main = "src/index.ts"
+compatibility_date = "2024-03-31"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "aero-pins-db"
+database_id = "83d82329-d5c0-4e28-a36d-4816994a5fb3"
+
+[ai]
+binding = "AI"

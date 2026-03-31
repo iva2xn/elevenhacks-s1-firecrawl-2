@@ -45,6 +45,24 @@ export default function MapControl() {
   const [isDropMode, setIsDropMode] = useState(false);
   const [activePinType, setActivePinType] = useState('hazard');
 
+  const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_API_URL || 'http://localhost:8787';
+
+  // Fetch pins on load
+  useEffect(() => {
+    const loadPins = async () => {
+      try {
+        const resp = await fetch(`${WORKER_URL}/api/pins`);
+        if (resp.ok) {
+          const data = await resp.json();
+          setPins(data);
+        }
+      } catch (err) {
+        console.warn('Backend not detected, running in simulation mode');
+      }
+    };
+    loadPins();
+  }, [WORKER_URL]);
+
   // Refs for high-performance, synchronous animation tracking
   const riderRef = useRef({
     longitude: -122.4,
@@ -203,14 +221,38 @@ export default function MapControl() {
     const { lng, lat } = evt.lngLat;
     
     if (isDropMode) {
-      const newPin = {
-        id: Date.now(),
+      const userText = window.prompt('Enter pin details (AI will classify this):', activePinType === 'hazard' ? 'Hazard detected' : 'Friend signal here');
+      
+      if (!userText) {
+        setIsDropMode(false);
+        return;
+      }
+
+      const pinRequest = {
         longitude: lng,
         latitude: lat,
-        type: activePinType,
-        text: activePinType === 'hazard' ? 'Hazard' : 'Friend'
+        text: userText,
+        author: 'Rider'
       };
-      setPins([...pins, newPin]);
+
+      try {
+        const resp = await fetch(`${WORKER_URL}/api/pins`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(pinRequest)
+        });
+        
+        if (resp.ok) {
+          const savedPin = await resp.json();
+          setPins(prev => [...prev, savedPin]);
+        } else {
+          // Fallback if worker isn't running
+          setPins(prev => [...prev, { ...pinRequest, id: Date.now(), type: activePinType }]);
+        }
+      } catch (err) {
+        // Fallback for local simulation
+        setPins(prev => [...prev, { ...pinRequest, id: Date.now(), type: activePinType }]);
+      }
       setIsDropMode(false);
     } else {
       if (isNavigating) return;

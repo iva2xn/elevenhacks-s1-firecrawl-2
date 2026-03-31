@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS pins;
+CREATE TABLE IF NOT EXISTS pins (
+  id TEXT PRIMARY KEY,
+  longitude REAL NOT NULL,
+  latitude REAL NOT NULL,
+  type TEXT NOT NULL,
+  text TEXT NOT NULL,
+  author TEXT,
+  timestamp INTEGER NOT NULL
+);
