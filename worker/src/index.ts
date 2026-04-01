@@ -12,17 +12,28 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-const SCOUT_PROMPT = `You are the Aero Co-Pilot Tactical Scout. You are analyzing a rider's specific route or location.
-Your mission is to provide a BRIEF, TACTICAL briefing about the area based on the search data provided.
-Focus on:
-1. Weather: Real-time conditions and hazards.
-2. Safety: Potential road hazards, gravel reports, or accident-prone zones.
-3. Intel: Any tactical advantages or points of interest for a rider.
+const SCOUT_PROMPT = `You are the Aero Co-Pilot Tactical Scout. You are a professional motorcycle spotter.
+Your mission is to summarize real-time intelligence into a CLEAN, NATURAL NARRATIVE for audio delivery.
 
 RULES:
-- Be professional and concise (Military Brevity).
-- Use current data only. 
-- Format as a high-priority dispatch.`;
+- ONLY report data that exists in the raw intelligence.
+- NEVER say "no hazards found," "no data gathered," or "no reports." Just skip them.
+- NEVER use abbreviations or symbols (Write "kilometers per hour" NOT "km/h", "degrees celsius" NOT "°C").
+- NEVER use headers, bold text, or symbols (No "TACTICAL BRIEFING:", No asterisks).
+- If there's nothing interesting to report besides the weather, just mention the weather and the next road ahead.`;
+
+const sanitizeBriefing = (text: string): string => {
+  return text
+    .replace(/\*\*.*?\*\*/g, '')                         // Remove bold text
+    .replace(/^\s*TACTICAL BRIEFING:?\s*/i, '')         // Strict header removal
+    .replace(/^\s*SCOUT REPORT:?\s*/i, '')               // Strict header removal
+    .replace(/^\s*INTEL:?\s*/i, '')                       // Strict header removal
+    .replace(/°C/g, ' degrees celsius')                  // Ensure TTS reads full words
+    .replace(/km\/h/g, ' kilometers per hour')           // Ensure TTS reads full words
+    .replace(/(\r\n|\n|\r)/gm, " ")                      // Natural flow
+    .replace(/\s+/g, ' ')                                // Collapse whitespace
+    .trim();
+};
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -260,8 +271,12 @@ export default {
             },
             body: JSON.stringify({
               text,
-              model_id: 'eleven_turbo_v2_5',
-              voice_settings: { stability: 0.45, similarity_boost: 0.8 },
+              model_id: 'eleven_multilingual_v2',
+              voice_settings: { 
+                stability: 0.45, 
+                similarity_boost: 0.8,
+                speed: 0.8 
+              },
             }),
           }
         );
@@ -328,15 +343,45 @@ export default {
         const searchTargets = [startPlace, endPlace, ...streets.slice(0, 3)].filter(Boolean);
         const uniqueTargets = Array.from(new Set(searchTargets));
         
-        // 3. Firecrawl: search for SAFETY and WEATHER separately per location
-        const reconResults = await Promise.all(uniqueTargets.slice(0, 4).map(async (loc) => {
-          const searches = [
-            `road safety conditions traffic accidents hazards near ${loc}`,
-            `current weather forecast ${loc} today`
-          ];
-          
-          const results = await Promise.all(searches.map(async (query) => {
+        // 2. Weather Code Translator (Open-Meteo)
+        const weatherCodeMap: Record<number, string> = {
+          0: 'Clear sky',
+          1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+          45: 'Fog', 48: 'Depositing rime fog',
+          51: 'Light drizzle', 53: 'Moderate drizzle', 55: 'Dense drizzle',
+          61: 'Slight rain', 63: 'Moderate rain', 65: 'Heavy rain',
+          71: 'Slight snow', 73: 'Moderate snow', 75: 'Heavy snow',
+          77: 'Snow grains',
+          80: 'Slight rain showers', 81: 'Moderate rain showers', 82: 'Violent rain showers',
+          85: 'Slight snow showers', 86: 'Heavy snow showers',
+          95: 'Thunderstorm', 96: 'Thunderstorm with slight hail', 99: 'Thunderstorm with heavy hail'
+        };
+
+        // 3. Concurrent Data Extraction: Structured Weather (Open-Meteo) + Tactical Search (Firecrawl)
+        const [weatherData, reconResults] = await Promise.all([
+          // A. Structured Weather for Start and End Points
+          Promise.all([startCoords, endCoords].map(async (coords, idx) => {
             try {
+              const resp = await fetch(
+                `https://api.open-meteo.com/v1/forecast?latitude=${coords[1]}&longitude=${coords[0]}&current_weather=true`
+              );
+              const data: any = await resp.json();
+              const current = data.current_weather;
+              const pointName = idx === 0 ? 'START' : 'END';
+              if (current) {
+                const condition = weatherCodeMap[current.weathercode] || `Condition Code ${current.weathercode}`;
+                return `${pointName}: ${current.temperature} degrees celsius, ${condition}, Wind: ${current.windspeed} kilometers per hour`;
+              }
+              return `${pointName}: Weather data unavailable via API.`;
+            } catch (e) {
+              return `${idx === 0 ? 'START' : 'END'}: Weather fetch failed.`;
+            }
+          })).then(results => results.join(' | ')),
+
+          // B. Firecrawl: search ONLY for SAFETY and HAZARDS per location
+          Promise.all(uniqueTargets.slice(0, 4).map(async (loc) => {
+            try {
+              const query = `road safety conditions traffic accidents hazards near ${loc}`;
               const fcResp = await fetch('https://api.firecrawl.dev/v1/search', {
                 method: 'POST',
                 headers: {
@@ -346,30 +391,30 @@ export default {
                 body: JSON.stringify({ query, limit: 3 })
               });
               const data: any = await fcResp.json();
-              console.log(`Firecrawl [${query.substring(0, 40)}]:`, data.success, 'results:', data.data?.web?.length || data.data?.length || 0);
-              
               const webResults = data.data?.web || data.data || [];
-              if (Array.isArray(webResults) && webResults.length > 0) {
-                return webResults.map((d: any) => `${d.title || ''}: ${d.description || d.snippet || ''}`).filter(Boolean).join(' | ');
-              }
-              return 'No data found.';
+              const safetyInfo = (Array.isArray(webResults) && webResults.length > 0)
+                ? webResults.map((d: any) => `${d.title || ''}: ${d.description || d.snippet || ''}`).filter(Boolean).join(' | ')
+                : 'No critical hazards found in search.';
+              
+              return `LOCATION: ${loc}\nSAFETY: ${safetyInfo}`;
             } catch (e: any) {
-              console.error(`Firecrawl search failed:`, e.message);
-              return 'Search unavailable.';
+              console.error(`Firecrawl safety search failed:`, e.message);
+              return `LOCATION: ${loc}\nSAFETY: Search unavailable.`;
             }
-          }));
-          
-          return `LOCATION: ${loc}\nSAFETY: ${results[0]}\nWEATHER: ${results[1]}`;
-        }));
+          }))
+        ]);
 
-        console.log('📊 Recon complete, synthesizing...');
+        console.log('📊 Recon complete. Weather:', weatherData);
+        console.log('📊 Safety Data Count:', reconResults.length);
 
         // 4. Synthesize with LLM
         const synthesizedIntel: any = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
-          prompt: `${SCOUT_PROMPT}\n\nROUTE: From "${startPlace}" to "${endPlace}"\nSTREETS ON ROUTE: ${streets.join(', ')}\n\nRAW INTELLIGENCE DATA:\n${reconResults.join('\n\n')}\n\nGenerate a 3-4 sentence tactical briefing covering: 1) Current weather conditions 2) Road safety/hazards 3) Any critical alerts. Be specific with data from the search results. Do NOT greet the rider. Start directly with the intel.\n\nTACTICAL BRIEFING:`
+          prompt: `${SCOUT_PROMPT}\n\nROUTE: From "${startPlace}" to "${endPlace}"\nSTREETS ON ROUTE: ${streets.join(', ')}\n\nSTRUCTURED WEATHER DATA:\n${weatherData}\n\nRAW SAFETY INTELLIGENCE:\n${reconResults.join('\n\n')}\n\nCombine this into 2-3 natural sentences. ALWAYS start with the current weather conditions. Then, mention only specific hazards if found. If no hazards are mentioned in the intel, just say "The roads look clear ahead." Do not use headers, bold text, or symbols.\n\nTACTICAL BRIEFING:`
         });
 
-        const briefing = synthesizedIntel.response.trim();
+        const rawBriefing = synthesizedIntel.response.trim();
+        const briefing = sanitizeBriefing(rawBriefing);
+        console.log('✅ Briefing sanitized:', briefing);
         console.log('✅ Briefing generated:', briefing.substring(0, 200));
 
         return new Response(JSON.stringify({ 
