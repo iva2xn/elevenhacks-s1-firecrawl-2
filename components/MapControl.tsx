@@ -6,9 +6,23 @@ import 'mapbox-gl/dist/mapbox-gl.css';
 import * as turf from '@turf/turf';
 
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
+const ELEVENLABS_KEY = process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '';
+
+const MOCK_RIDERS = [
+  { id: 'rider-aero', name: 'Aero Co-Pilot', handle: '@aero', avatar_url: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Aero' },
+  { id: 'rider-mia', name: 'Mia', handle: '@ride_mia', avatar_url: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Mia' }
+];
 
 export default function MapControl() {
   const mapRef = useRef<MapRef>(null);
+
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [isOnboarding, setIsOnboarding] = useState(false);
+  const [profileName, setProfileName] = useState('');
+  const [profileHandle, setProfileHandle] = useState('');
+  const [activeTab, setActiveTab] = useState<'profile' | 'friends' | 'settings'>('profile');
+  const [friendsList, setFriendsList] = useState<string[]>([]);
+  const [isGroupOnly, setIsGroupOnly] = useState(false);
 
   const [viewState, setViewState] = useState({
     longitude: -122.4,
@@ -52,6 +66,11 @@ export default function MapControl() {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [uploadedAudio_id, setUploadedAudio_id] = useState<string | null>(null);
   const [newPinText, setNewPinText] = useState('');
+  const [useScout, setUseScout] = useState(true);
+  const [routeIntel, setRouteIntel] = useState<string | null>(null);
+  const [commsState, setCommsState] = useState<'off' | 'connecting' | 'on'>('off');
+  const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
+  const convRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
   const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_API_URL || 'http://localhost:8787';
@@ -66,11 +85,108 @@ export default function MapControl() {
           setPins(data);
         }
       } catch (err) {
-        console.warn('Backend not detected, running in simulation mode');
+        console.warn('Backend not detected');
       }
     };
+    
+    const initializeUser = async () => {
+      const savedId = localStorage.getItem('aero_rider_id');
+      if (savedId) {
+        const user = {
+          id: savedId,
+          name: localStorage.getItem('aero_rider_name') || 'Rider',
+          handle: localStorage.getItem('aero_rider_handle') || '@rider',
+          avatar_url: localStorage.getItem('aero_rider_avatar') || `https://api.dicebear.com/7.x/avataaars/svg?seed=${savedId}`
+        };
+        setCurrentUser(user);
+        setProfileName(user.name);
+        setProfileHandle(user.handle);
+        syncProfile(user);
+      } else {
+        const randId = 'rider-' + Math.random().toString(36).substring(2, 9);
+        const randName = 'Rider-' + Math.floor(1000 + Math.random() * 9000);
+        const newUser = {
+          id: randId,
+          name: randName,
+          handle: '@' + randName.toLowerCase(),
+          avatar_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${randId}`
+        };
+        setCurrentUser(newUser);
+        setProfileName(newUser.name);
+        setProfileHandle(newUser.handle);
+        setIsOnboarding(true);
+      }
+    };
+
+    const syncProfile = async (user: any) => {
+      try {
+        await fetch(`${WORKER_URL}/api/users`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(user)
+        });
+
+        const res = await fetch(`${WORKER_URL}/api/friends/${user.id}`);
+        if (res.ok) {
+          const list = await res.json();
+          setFriendsList(list);
+        }
+      } catch (err) {
+        console.warn('Sync failed');
+      }
+    };
+
     loadPins();
+    initializeUser();
   }, [WORKER_URL]);
+
+  const handleUpdateProfile = async () => {
+    if (!currentUser) return;
+    const updatedUser = {
+      ...currentUser,
+      name: profileName,
+      handle: profileHandle.startsWith('@') ? profileHandle : '@' + profileHandle
+    };
+    setCurrentUser(updatedUser);
+    localStorage.setItem('aero_rider_name', updatedUser.name);
+    localStorage.setItem('aero_rider_handle', updatedUser.handle);
+    localStorage.setItem('aero_rider_avatar', updatedUser.avatar_url);
+    
+    try {
+      await fetch(`${WORKER_URL}/api/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedUser)
+      });
+      setIsSidebarOpen(false);
+    } catch (err) {
+      console.error('Update failed');
+    }
+  };
+
+  const handleRandomizeAvatar = () => {
+    if (!currentUser) return;
+    const newSeed = Math.random().toString(36).substring(7);
+    const updatedUser = {
+      ...currentUser,
+      avatar_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${newSeed}`
+    };
+    setCurrentUser(updatedUser);
+  };
+
+  const handleFinishOnboarding = () => {
+    localStorage.setItem('aero_rider_id', currentUser.id);
+    localStorage.setItem('aero_rider_name', currentUser.name);
+    localStorage.setItem('aero_rider_handle', currentUser.handle);
+    localStorage.setItem('aero_rider_avatar', currentUser.avatar_url);
+    setIsOnboarding(false);
+    // Force immediate sync
+    fetch(`${WORKER_URL}/api/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(currentUser)
+    });
+  };
 
   // Refs for high-performance, synchronous animation tracking
   const riderRef = useRef({
@@ -223,6 +339,7 @@ export default function MapControl() {
       requestAnimationFrame(step);
     };
 
+
     requestAnimationFrame(step);
   };
   
@@ -237,16 +354,25 @@ export default function MapControl() {
         audioUrl = `${WORKER_URL}/api/audio/${audioId}`;
         console.log('🔗 Playing original voice from R2:', audioUrl);
       } else {
-        // Play AI voice from ElevenLabs proxy
-        const resp = await fetch(`/api/tts`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text })
-        });
+        // Play AI voice from ElevenLabs directly
+        const resp = await fetch(
+          `https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM`,
+          {
+            method: 'POST',
+            headers: {
+              'xi-api-key': ELEVENLABS_KEY,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              text,
+              model_id: 'eleven_multilingual_v2',
+              voice_settings: { stability: 0.45, similarity_boost: 0.8 },
+            }),
+          }
+        );
         
         if (!resp.ok) {
-          const errorData = await resp.json();
-          throw new Error(errorData.error || 'TTS failed');
+          throw new Error('ElevenLabs TTS failed: ' + resp.status);
         }
         
         const blob = await resp.blob();
@@ -254,6 +380,7 @@ export default function MapControl() {
       }
       
       const audio = new Audio(audioUrl);
+      audio.playbackRate = 1.15;
       audio.onended = () => setIsPlaying(null);
       await audio.play();
     } catch (err) {
@@ -317,7 +444,7 @@ export default function MapControl() {
       longitude: isCreatingPin.lng,
       latitude: isCreatingPin.lat,
       text: transcription || 'Voice Message',
-      author: 'Rider',
+      author_id: currentUser.id,
       audio_id: audio_id
     };
 
@@ -344,13 +471,86 @@ export default function MapControl() {
     setRecordingState('idle');
   };
 
+  const handleFollow = async (friendId: string) => {
+    try {
+      if (!currentUser?.id) return;
+      await fetch(`${WORKER_URL}/api/friends`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: currentUser.id, friend_id: friendId })
+      });
+      setFriendsList(prev => Array.from(new Set([...prev, friendId])));
+    } catch (err) {
+      console.error('Follow failed', err);
+    }
+  };
 
+  const handleToggleComms = async (contextOverride?: string) => {
+    if (commsState === 'on' || commsState === 'connecting') {
+      if (convRef.current) {
+        convRef.current.close();
+      }
+      setCommsState('off');
+      return;
+    }
+
+    setCommsState('connecting');
+    try {
+      const AGENT_ID = 'agent_8501kn3j7kj4emxbgtj1rvafr0r1';
+      const socket = new WebSocket(`wss://api.elevenlabs.io/v1/convai/conversation?agent_id=${AGENT_ID}`);
+      
+      socket.onopen = () => {
+        console.log('📡 Comms Uplink Established');
+        setCommsState('on');
+        
+        // Prime with intelligence using correct protocol
+        const intel = contextOverride || routeIntel;
+        if (intel) {
+          socket.send(JSON.stringify({
+            type: 'conversation_initiation_client_data',
+            conversation_config_override: {
+              agent: {
+                prompt: {
+                  prompt: `You are the Aero Tactical Scout, a motorcycle co-pilot AI. You have received the following real-time intelligence briefing about the rider's current route. Deliver this briefing conversationally and concisely. Focus on safety-critical information first (hazards, weather, road conditions), then tactical advantages. Be direct and professional.\n\nROUTE INTELLIGENCE:\n${intel}`
+                },
+                first_message: 'Scout online. I have your route intel — here is your tactical briefing.'
+              }
+            }
+          }));
+          console.log('🛰️ Intel primed to agent:', intel.substring(0, 200));
+        }
+      };
+
+      socket.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'agent_response') setIsAgentSpeaking(true);
+          if (msg.type === 'agent_response_end') setIsAgentSpeaking(false);
+        } catch (e) {
+          // Binary audio data, ignore parse errors
+        }
+      };
+
+      socket.onerror = (err) => {
+        console.error('WebSocket error:', err);
+        setCommsState('off');
+      };
+
+      socket.onclose = () => setCommsState('off');
+      convRef.current = socket;
+    } catch (err) {
+      console.error('Radio failed', err);
+      setCommsState('off');
+    }
+  };
+
+  const filteredPins = pins.filter(p => !isGroupOnly || friendsList.includes(p.author_id) || p.author_id === currentUser.id);
 
   // 🛰️ PROXIMITY ENGINE: Auto-trigger audio when near pins
   useEffect(() => {
-    if (isPlaying || pins.length === 0) return;
+    if (isPlaying || filteredPins.length === 0) return;
 
-    for (const pin of pins) {
+    for (const pin of filteredPins) {
       if (visitedPins.has(pin.id)) continue;
 
       const riderPoint = turf.point([riderPosition.longitude, riderPosition.latitude]);
@@ -377,39 +577,95 @@ export default function MapControl() {
     if (isDropMode) {
       setIsCreatingPin({ lng, lat });
       setIsDropMode(false);
-    } else {
-      if (isNavigating) return;
-      
-      if (isDevMode) {
-        const routeInfo = await fetchRoute(
-          [riderPosition.longitude, riderPosition.latitude],
-          [lng, lat]
-        );
-        if (routeInfo) {
-          setRouteData({ type: 'Feature', geometry: routeInfo.geometry });
-          animateRider(routeInfo);
-        }
-      } else {
-        setTargetWaypoint([lng, lat]);
-      }
+      return;
     }
+    
+    if (isNavigating) return;
+    
+    const startCoords: [number, number] = [riderPosition.longitude, riderPosition.latitude];
+    const endCoords: [number, number] = [lng, lat];
+    
+    // Step 1: Get the route and draw it on the map
+    const routeInfo = await fetchRoute(startCoords, endCoords);
+    if (!routeInfo) return;
+    
+    setRouteData({ type: 'Feature', geometry: routeInfo.geometry });
+    setTargetWaypoint(endCoords);
+    
+    // Step 2: Extract street names from route steps
+    const steps = routeInfo.steps;
+    const streets = steps 
+      ? Array.from(new Set(steps.map((s: any) => s.name).filter((n: string) => n && n !== '')))
+      : [];
+    
+    console.log('🛰️ Route plotted. Streets:', streets);
+    console.log('📍 From:', startCoords, 'To:', endCoords);
+    
+    // Step 3: Send to backend — reverse geocode cities, Firecrawl search, LLM summary
+    try {
+      const reconResp = await fetch(`${WORKER_URL}/api/recon/route`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          streets, 
+          startCoords, 
+          endCoords,
+          mapboxToken: MAPBOX_TOKEN 
+        })
+      });
+      const reconData = await reconResp.json();
+      
+      if (reconData.briefing) {
+        console.log('📡 BRIEFING:', reconData.briefing);
+        console.log('📍 Route:', reconData.startPlace, '→', reconData.endPlace);
+        setRouteIntel(reconData.briefing);
+        
+        // Step 4: Generate voice summary and play it
+        try {
+          const ttsResp = await fetch(
+            `https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM`,
+            {
+              method: 'POST',
+              headers: {
+                'xi-api-key': ELEVENLABS_KEY,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                text: reconData.briefing,
+                model_id: 'eleven_multilingual_v2',
+                voice_settings: { stability: 0.45, similarity_boost: 0.8 },
+              }),
+            }
+          );
+          if (ttsResp.ok) {
+            const blob = await ttsResp.blob();
+            const audioUrl = URL.createObjectURL(blob);
+            const audio = new Audio(audioUrl);
+            audio.playbackRate = 1.15;
+            
+            // Wait for voice to finish, then start driving
+            await new Promise<void>((resolve) => {
+              audio.onended = () => resolve();
+              audio.onerror = () => resolve();
+              audio.play().catch(() => resolve());
+            });
+            console.log('🔊 Briefing complete');
+          }
+        } catch (ttsErr) {
+          console.error('TTS failed:', ttsErr);
+        }
+      } else if (reconData.error) {
+        console.error('Recon error:', reconData.error);
+      }
+    } catch (err) {
+      console.error('Recon request failed:', err);
+    }
+    
+    // Step 5: NOW start driving
+    setTargetWaypoint(null);
+    animateRider(routeInfo);
   };
 
-  useEffect(() => {
-    if (isDevMode && targetWaypoint && !isNavigating) {
-      const triggerMove = async () => {
-        const routeInfo = await fetchRoute(
-          [riderPosition.longitude, riderPosition.latitude],
-          targetWaypoint
-        );
-        if (routeInfo) {
-          setRouteData({ type: 'Feature', geometry: routeInfo.geometry });
-          animateRider(routeInfo);
-        }
-      };
-      triggerMove();
-    }
-  }, [isDevMode, targetWaypoint, isNavigating]);
 
   if (!MAPBOX_TOKEN) {
     return (
@@ -503,7 +759,7 @@ export default function MapControl() {
           </div>
         </Marker>
 
-        {pins.map(pin => (
+        {filteredPins.map(pin => (
           <Marker 
             key={pin.id} 
             longitude={pin.longitude} 
@@ -512,13 +768,24 @@ export default function MapControl() {
             onClick={(e) => {
               e.originalEvent.stopPropagation();
               setSelectedPin(pin);
+              // Auto-engage Comms with this pin's context
+              if (commsState === 'off') {
+                handleToggleComms(pin.text);
+              }
             }}
           >
-            <div className="cursor-pointer">
-              <svg viewBox="0 0 100 100" className={`w-10 h-10 drop-shadow-2xl transition-all duration-300 ${selectedPin?.id === pin.id ? 'scale-125' : 'hover:scale-110'}`}>
+            <div className="relative group cursor-pointer transition-all duration-300 hover:scale-110 active:scale-95">
+              <svg viewBox="0 0 100 100" className={`w-11 h-11 drop-shadow-2xl transition-all duration-300 ${selectedPin?.id === pin.id ? 'scale-115' : ''}`}>
                 <path d="M50 0 C30 0 15 15 15 35 C15 60 50 100 50 100 C50 100 85 60 85 35 C85 15 70 0 50 0 Z" fill={pin.type === 'hazard' ? '#FF5D8F' : '#C084FC'} />
-                <circle cx="50" cy="35" r="10" fill="white" fillOpacity="0.8" />
               </svg>
+              {/* Profile Avatar inside Pin */}
+              <div className="absolute top-[6px] left-[10.5px] w-[23px] h-[23px] rounded-full overflow-hidden border-[1.5px] border-white/30 bg-black/40">
+                 <img 
+                   src={pin.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${pin.author_id || pin.id}`} 
+                   className="w-full h-full object-cover" 
+                   alt="Author"
+                 />
+              </div>
             </div>
           </Marker>
         ))}
@@ -621,12 +888,17 @@ export default function MapControl() {
                   </div>
                 )}
  
-                {recordingState === 'transcribing' && (
+              {recordingState === 'transcribing' && (
                   <div className="flex flex-col items-center gap-4">
-                    <div className="w-20 h-20 rounded-full border-2 border-dashed border-[#FF5D8F]/50 animate-spin flex items-center justify-center">
-                      <svg className="w-8 h-8 text-[#FF5D8F]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M12 4V2m0 20v-2m8-8h2M2 12h2" /></svg>
+                    <div className="w-20 h-20 rounded-full border-2 border-[#FF5D8F]/30 flex items-center justify-center">
+                      <div className="w-12 h-12 bg-[#FF5D8F]/10 rounded-full flex items-center justify-center">
+                        <svg className="w-6 h-6 text-[#FF5D8F]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M12 4V2m0 20v-2m8-8h2M2 12h2" /></svg>
+                      </div>
                     </div>
-                    <p className="text-white font-black text-lg uppercase tracking-tight">Processing</p>
+                    <div>
+                      <p className="text-white font-black text-lg uppercase tracking-tight">Recording Voice</p>
+                      <p className="text-zinc-500 text-[8px] font-bold uppercase tracking-widest">Processing Tactical Input</p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -650,7 +922,7 @@ export default function MapControl() {
                   <>
                     <button 
                       onClick={handleCreatePin}
-                      className="w-full py-4 bg-[#FF5D8F] text-white hover:bg-[#FF7DA5] font-bold text-[11px] uppercase tracking-widest rounded-2xl transition-all active:scale-95"
+                      className="w-full py-4 bg-[#FF5D8F] text-white hover:bg-[#FF7DA5] font-bold text-[11px] uppercase tracking-widest rounded-2xl transition-all active:scale-95 shadow-lg shadow-[#FF5D8F]/20"
                     >
                       Confirm Drop
                     </button>
@@ -668,8 +940,47 @@ export default function MapControl() {
         </div>
       )}
 
+      {/* Onboarding Overlay */}
+      {isOnboarding && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/80 backdrop-blur-3xl animate-in fade-in duration-500">
+          <div className="w-full max-w-sm bg-[#0A0A0A] border border-white/10 rounded-3xl shadow-3xl overflow-hidden p-10 text-center space-y-8 animate-in zoom-in-95 duration-500">
+            <div className="space-y-2">
+              <h1 className="text-white text-3xl font-black uppercase tracking-tighter">Welcome to Aero</h1>
+              <p className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Co-Pilot Social Network</p>
+            </div>
+
+            <div className="relative mx-auto w-32 h-32">
+              <div className="absolute inset-0 bg-white/20 blur-2xl rounded-full"></div>
+              <div className="relative w-full h-full rounded-full border-2 border-[#FF5D8F] overflow-hidden bg-zinc-900 shadow-2xl">
+                 <img src={currentUser?.avatar_url} className="w-full h-full object-cover" />
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <p className="text-white text-xl font-bold">{currentUser?.name}</p>
+              <p className="text-[#FF5D8F] text-xs font-black uppercase tracking-widest">{currentUser?.handle}</p>
+            </div>
+
+            <button 
+              onClick={handleFinishOnboarding}
+              className="w-full py-5 bg-[#FF5D8F] hover:bg-[#FF7DA5] text-white font-black text-xs uppercase tracking-[0.2em] rounded-2xl shadow-xl shadow-[#FF5D8F]/20 transition-all active:scale-95"
+            >
+              Start Riding
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main UI Controls: Bottom Right */}
-      <div className="absolute bottom-6 right-6 z-20 flex flex-col items-end gap-6 pointer-events-none">
+      <div className={`absolute bottom-6 right-6 z-20 flex flex-col items-end gap-5 pointer-events-none transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] ${isSidebarOpen ? 'translate-y-24 opacity-0 pointer-events-none' : 'translate-y-0 opacity-100 pointer-events-auto'}`}>
+        {currentUser && (
+          <button 
+            onClick={() => { setActiveTab('profile'); setIsSidebarOpen(true); }}
+            className="pointer-events-auto h-14 w-14 rounded-full border-2 border-white/20 bg-zinc-900 overflow-hidden shadow-2xl hover:scale-110 active:scale-95 transition-all shadow-black/50 overflow-hidden"
+          >
+            <img src={currentUser.avatar_url} className="w-full h-full object-cover" />
+          </button>
+        )}
         <button 
           onClick={() => setIsDropMode(!isDropMode)} 
           className={`pointer-events-auto h-14 w-14 flex items-center justify-center rounded-2xl shadow-2xl transition-all duration-500 active:scale-95 group relative ${isDropMode ? 'bg-white text-black rotate-45' : 'bg-[#FF5D8F] text-white hover:bg-[#FF7DA5]'}`}
@@ -680,77 +991,222 @@ export default function MapControl() {
         </button>
       </div>
 
-      {!isSidebarOpen && (
-        <div className="absolute top-6 right-6 z-20 animate-in zoom-in-50 duration-500">
-          <button onClick={() => setIsSidebarOpen(true)} className="bg-black/95 backdrop-blur-3xl border border-white/10 p-4 rounded-2xl shadow-2xl text-white/80 hover:text-[#FF5D8F] transition-all">
-            <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
-              <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-              <circle cx="12" cy="12" r="3" />
-            </svg>
-          </button>
-        </div>
-      )}
+      <div className={`absolute top-6 right-6 z-20 transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] ${isSidebarOpen ? '-translate-y-12 opacity-0' : 'translate-y-0 opacity-100'}`}>
+        <button 
+          onClick={() => { setActiveTab('settings'); setIsSidebarOpen(true); }}
+          className="bg-black/95 backdrop-blur-3xl border border-white/10 p-4 rounded-2xl shadow-2xl text-white/80 hover:text-[#FF5D8F] transition-all pointer-events-auto"
+        >
+          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+            <path d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
+      </div>
 
-      <div className={`absolute top-6 right-6 z-10 w-72 h-[calc(100vh-3rem)] pointer-events-none transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] ${isSidebarOpen ? 'translate-x-0 opacity-100' : 'translate-x-12 opacity-0'}`}>
-        <div className="bg-black/95 backdrop-blur-3xl border border-white/10 h-full rounded-2xl shadow-2xl relative flex flex-col pointer-events-auto overflow-hidden">
-          <div className="p-8 flex-1 overflow-y-auto no-scrollbar">
-            <div className="flex items-center justify-between mb-8 pb-4 border-b border-white/10">
-              <h1 className="text-white font-bold text-xl uppercase tracking-tight">Settings</h1>
-              <button onClick={() => setIsSidebarOpen(false)} className="text-white/40 hover:text-[#FF5D8F] transition-colors">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M6 18L18 6M6 6l12 12" /></svg>
-              </button>
-            </div>
-            <div className="space-y-6">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between px-1">
-                  <div>
-                    <p className="text-[9px] uppercase tracking-widest text-zinc-500 font-bold">Developer Mode</p>
-                    <p className="text-[10px] text-zinc-600 font-medium">Simulation Controls</p>
+      <div className={`absolute top-6 right-6 z-10 w-80 h-[calc(100vh-3rem)] pointer-events-none transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] ${isSidebarOpen ? 'translate-x-0 opacity-100 scale-100' : 'translate-x-12 opacity-0 scale-95'}`}>
+        <div className="bg-black/90 backdrop-blur-3xl border border-white/10 h-full rounded-[2.5rem] shadow-4xl relative flex flex-col pointer-events-auto overflow-hidden ring-1 ring-white/5">
+          {/* Sidebar Tabs */}
+          <div className="flex bg-white/5 p-1.5 mx-8 mt-8 mb-6 rounded-2xl border border-white/10 relative">
+             {(['profile', 'friends', 'settings'] as const).map(tab => (
+               <button 
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`flex-1 py-2.5 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activeTab === tab ? 'bg-[#FF5D8F] text-white shadow-lg shadow-[#FF5D8F]/20' : 'text-zinc-500 hover:text-white'}`}
+               >
+                 {tab}
+               </button>
+             ))}
+             {/* New Sleek Closer */}
+             <button 
+                onClick={() => setIsSidebarOpen(false)}
+                className="absolute -top-3 -right-3 w-8 h-8 flex items-center justify-center bg-black/90 border border-white/10 rounded-full text-white/40 hover:text-[#FF5D8F] transition-all hover:scale-110 active:scale-95 shadow-xl ring-4 ring-[#0A0A0A]"
+             >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M6 18L18 6M6 6l12 12" /></svg>
+             </button>
+          </div>
+
+          <div className="flex-1 overflow-y-auto no-scrollbar px-10 pb-8">
+            {activeTab === 'profile' && currentUser && (
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="flex flex-col items-center gap-5">
+                  <div className="relative">
+                    <div className="w-28 h-28 rounded-full border-2 border-[#FF5D8F] p-1 shadow-2xl">
+                       <div className="w-full h-full rounded-full overflow-hidden bg-zinc-900 border border-white/10">
+                          <img src={currentUser.avatar_url} className="w-full h-full object-cover" />
+                       </div>
+                    </div>
+                    <button 
+                      onClick={handleRandomizeAvatar}
+                      className="absolute bottom-0 right-0 p-2.5 bg-[#FF5D8F] text-white rounded-full shadow-lg hover:scale-110 active:scale-95 transition-all ring-4 ring-[#0A0A0A]"
+                    >
+                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                    </button>
                   </div>
-                  <button onClick={() => setIsDevMode(!isDevMode)} className={`w-10 h-5 rounded-2xl relative transition-colors ${isDevMode ? 'bg-[#FF5D8F]' : 'bg-white/10'}`}>
-                    <div className={`absolute top-1 left-1 w-3 h-3 rounded-2xl bg-white transition-transform ${isDevMode ? 'translate-x-5' : ''}`}></div>
+                  <div className="text-center">
+                    <h2 className="text-white font-black text-2xl tracking-tighter">{currentUser.name}</h2>
+                    <p className="text-[#FF5D8F] text-xs font-black uppercase tracking-[0.2em] mt-1">{currentUser.handle}</p>
+                  </div>
+                </div>
+
+                <div className="space-y-5 pt-4">
+                  <div className="space-y-2">
+                    <label className="text-[9px] uppercase tracking-widest text-[#FF5D8F] font-bold px-1 py-1 bg-[#FF5D8F]/10 rounded border border-[#FF5D8F]/20 inline-block">Rider Profile</label>
+                    <div className="space-y-3">
+                       <input 
+                        type="text" 
+                        value={profileName} 
+                        onChange={(e) => setProfileName(e.target.value)}
+                        className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-sm font-bold focus:outline-none focus:border-[#FF5D8F] transition-all ring-1 ring-transparent focus:ring-[#FF5D8F]/20"
+                        placeholder="Rider Name"
+                      />
+                      <input 
+                        type="text" 
+                        value={profileHandle} 
+                        onChange={(e) => setProfileHandle(e.target.value)}
+                        className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-sm font-mono font-bold focus:outline-none focus:border-[#FF5D8F] transition-all ring-1 ring-transparent focus:ring-[#FF5D8F]/20"
+                        placeholder="@handle"
+                      />
+                    </div>
+                  </div>
+                  <button 
+                    onClick={handleUpdateProfile}
+                    className="w-full py-5 bg-[#FF5D8F] hover:bg-[#FF7DA5] text-white font-black text-xs uppercase tracking-[0.2em] rounded-2xl transition-all shadow-xl shadow-[#FF5D8F]/30 active:scale-95"
+                  >
+                    Update Identity
                   </button>
                 </div>
-                {isDevMode && (
-                  <div className="p-4 bg-white/5 rounded-2xl border border-white/10 space-y-4 animate-in slide-in-from-top-4">
-                    <div className="flex justify-between items-center px-1">
-                      <p className="text-[9px] uppercase tracking-widest text-[#FF5D8F] font-bold">Travel Speed</p>
-                      <p className="text-[10px] font-mono text-white">{travelSpeed.toFixed(4)}x</p>
+              </div>
+            )}
+
+            {activeTab === 'friends' && (
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                <div className="space-y-6">
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Discovery</h3>
+                    <div className="flex items-center gap-1.5 bg-[#FF5D8F]/10 border border-[#FF5D8F]/20 px-2 py-1 rounded-full">
+                       <div className="w-1.5 h-1.5 rounded-full bg-[#FF5D8F] shadow-[0_0_8px_#FF5D8F]" />
+                       <span className="text-[8px] font-black text-[#FF5D8F] uppercase tracking-widest">Online</span>
                     </div>
-                    <input type="range" min="0.0005" max="0.5" step="0.0001" value={travelSpeed} onChange={(e) => setTravelSpeed(parseFloat(e.target.value))} className="w-full accent-[#FF5D8F]" />
                   </div>
-                )}
-              </div>
-              <div className="h-px bg-white/5" />
-              <div className="p-4 bg-[#FF5D8F]/10 rounded-2xl border border-[#FF5D8F]/20 flex justify-between items-center">
-                <div>
-                  <p className="text-[10px] uppercase tracking-widest text-[#FF5D8F] font-bold">Status</p>
-                  <p className="text-white font-mono text-xs mt-0.5">{isNavigating ? 'Navigating' : 'Standby'}</p>
+                  
+                  <div className="space-y-2.5">
+                    {MOCK_RIDERS.map(rider => (
+                      <div key={rider.id} className="group bg-white/5 border border-white/10 rounded-[1.5rem] p-4 flex items-center gap-4 transition-all hover:bg-white/[0.08] hover:border-white/20">
+                        <div className="w-12 h-12 rounded-2xl overflow-hidden border border-white/10 bg-zinc-900 group-hover:scale-105 transition-transform">
+                           <img src={rider.avatar_url} className="w-full h-full object-cover" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                           <p className="text-white font-black text-xs truncate">{rider.name}</p>
+                           <p className="text-[#FF5D8F] text-[9px] font-black uppercase tracking-tighter truncate">{rider.handle}</p>
+                        </div>
+                        {currentUser?.id !== rider.id && (
+                          <button 
+                            onClick={() => handleFollow(rider.id)}
+                            disabled={friendsList.includes(rider.id)}
+                            className={`p-3 rounded-2xl border transition-all ${friendsList.includes(rider.id) ? 'bg-green-500/10 border-green-500/30 text-green-500' : 'bg-white/5 border-white/10 text-white/40 hover:text-[#FF5D8F] hover:border-[#FF5D8F]/50 ring-0 hover:ring-4 ring-[#FF5D8F]/10'}`}
+                          >
+                            {friendsList.includes(rider.id) ? (
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M5 13l4 4L19 7" /></svg>
+                            ) : (
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M12 4v16m8-8H4" /></svg>
+                            )}
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className={`w-2 h-2 rounded-2xl bg-[#FF5D8F] ${isNavigating ? 'animate-ping' : 'opacity-40'}`}></div>
               </div>
-              <div className="space-y-3">
-                <p className="text-[10px] uppercase tracking-widest text-zinc-500 font-bold px-1 text-[9px]">Simulation Layer</p>
-                
+            )}
 
-
-                <button onClick={() => setIsDropMode(!isDropMode)} className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all duration-300 ${isDropMode ? 'bg-[#FF5D8F] text-white border-white/20' : 'bg-white/5 border-white/10 text-zinc-400'}`}>
-                  <div className="flex items-center gap-3">
-                    <svg className="w-5 h-5 opacity-80" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                    <span className="font-bold text-xs uppercase">Drop Marker</span>
+            {activeTab === 'settings' && (
+              <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pt-2">
+                <div className="bg-white/5 border border-white/10 rounded-3xl p-6 space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-white text-xs font-black uppercase tracking-widest">Simulator</h4>
+                      <p className="text-zinc-500 text-[9px] font-bold uppercase tracking-tighter">Developer Control</p>
+                    </div>
+                    <button onClick={() => setIsDevMode(!isDevMode)} className={`w-12 h-6 rounded-full relative transition-all duration-300 ${isDevMode ? 'bg-[#FF5D8F] shadow-lg shadow-[#FF5D8F]/30' : 'bg-white/10'}`}>
+                      <div className={`absolute top-1.5 left-1.5 w-3 h-3 rounded-full bg-white transition-transform duration-300 ${isDevMode ? 'translate-x-6' : ''}`}></div>
+                    </button>
                   </div>
-                </button>
+                  
+                  {isDevMode && (
+                    <div className="space-y-5 animate-in slide-in-from-top-4 duration-300 pt-2 border-t border-white/10">
+                      <div className="flex justify-between items-center text-[10px] font-black uppercase">
+                        <span className="text-[#FF5D8F]">Warp Speed</span>
+                        <span className="text-white font-mono">{travelSpeed.toFixed(4)}x</span>
+                      </div>
+                      <input type="range" min="0.0005" max="0.5" step="0.0001" value={travelSpeed} onChange={(e) => setTravelSpeed(parseFloat(e.target.value))} className="w-full h-1.5 bg-white/10 rounded-full appearance-none accent-[#FF5D8F]" />
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 gap-4">
+                  <button onClick={() => setIsGroupOnly(!isGroupOnly)} className={`w-full flex items-center justify-between p-6 rounded-3xl border transition-all duration-500 ${isGroupOnly ? 'bg-white text-black border-white' : 'bg-white/5 border-white/10 text-zinc-500 hover:bg-white/10 group'}`}>
+                    <div className="flex items-center gap-4">
+                      <div className={`w-10 h-10 rounded-2xl flex items-center justify-center transition-colors ${isGroupOnly ? 'bg-black text-white' : 'bg-white/5 text-[#FF5D8F] group-hover:bg-[#FF5D8F]/10'}`}>
+                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197" /></svg>
+                      </div>
+                      <div className="text-left">
+                        <p className="text-[11px] font-black uppercase tracking-widest">{isGroupOnly ? 'Group View' : 'Global View'}</p>
+                        <p className={`text-[9px] font-bold uppercase transition-colors ${isGroupOnly ? 'text-black/60' : 'text-zinc-600'}`}>{isGroupOnly ? 'Filtered Selection' : 'Unfiltered Stream'}</p>
+                      </div>
+                    </div>
+                  </button>
+                  <div className="bg-black/20 border border-white/5 rounded-3xl p-6 space-y-6">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <h4 className="text-white text-xs font-black uppercase tracking-widest">Aero Comms</h4>
+                        <p className="text-[#FF5D8F] text-[8px] font-bold uppercase tracking-tighter shadow-sm">{commsState === 'on' ? 'Satellite Link Established' : 'Radio Offline'}</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                         {isAgentSpeaking && <div className="flex gap-1 items-center px-2 py-1 bg-[#FF5D8F]/10 rounded-full"><span className="text-[8px] text-[#FF5D8F] font-black uppercase">Receiving Brief</span></div>}
+                         <div className={`w-2 h-2 rounded-full ${commsState === 'on' ? 'bg-[#FF5D8F] shadow-[0_0_8px_#FF5D8F]' : 'bg-zinc-800'}`} />
+                      </div>
+                    </div>
+                    
+                    <button 
+                      onClick={() => handleToggleComms()}
+                      disabled={commsState === 'connecting'}
+                      className={`w-full py-5 rounded-2xl flex items-center justify-center gap-4 transition-all active:scale-95 border ${commsState === 'on' ? 'bg-[#FF5D8F] text-white border-[#FF5D8F] shadow-lg shadow-[#FF5D8F]/20' : 'bg-white/5 text-white/40 border-white/10 hover:border-[#FF5D8F]/50 hover:text-white'}`}
+                    >
+                      <svg className={`w-5 h-5 ${commsState === 'on' ? 'scale-110' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                         <path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                      </svg>
+                      <span className="text-[10px] font-black uppercase tracking-[0.2em]">{commsState === 'on' ? 'Disconnect Radio' : commsState === 'connecting' ? 'Establishing Link...' : 'Connect Tactical Comms'}</span>
+                    </button>
+
+                    {routeIntel && (
+                      <div className="p-4 bg-[#FF5D8F]/5 border border-[#FF5D8F]/10 rounded-2xl">
+                         <p className="text-[#FF5D8F] text-[8px] font-black uppercase tracking-widest mb-1.5 opacity-50">Active Intel Briefing</p>
+                         <p className="text-white/80 text-[10px] font-bold leading-relaxed line-clamp-3 italic opacity-60">"{routeIntel}"</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bg-[#FF5D8F]/5 border border-[#FF5D8F]/10 rounded-3xl p-6 mt-12">
+                     <div className="flex items-center gap-4">
+                        <div className={`w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_#EF4444]`} />
+                        <div className="flex-1">
+                          <p className="text-white text-[10px] font-black uppercase tracking-[0.2em]">{isNavigating ? 'In Motion' : 'Stationary'}</p>
+                          <p className="text-zinc-500 text-[8px] font-bold uppercase tracking-widest mt-0.5">Recording Stream Status</p>
+                        </div>
+                     </div>
+                  </div>
+                </div>
               </div>
-            </div>
+            )}
           </div>
-          {isDevMode && (
-            <div className="p-8 border-t border-white/10 bg-black/40 rounded-b-2xl">
-              <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-widest text-[#FF5D8F]">
-                <span>Active Marks</span>
-                <span className="text-white font-mono">{pins.length + (targetWaypoint ? 1 : 0)}</span>
-              </div>
-            </div>
-          )}
+
+          <div className="p-10 border-t border-white/5 bg-black/40 relative flex justify-between items-center">
+             <div className="flex items-center gap-2 opacity-30">
+                <div className="w-1.5 h-1.5 rounded-full bg-red-500 shadow-[0_0_8px_#EF4444]" />
+                <span className="text-[8px] font-black uppercase tracking-widest text-[#FF5D8F]">Aero Core Active</span>
+             </div>
+             <span className="text-[8px] font-mono text-zinc-700">v4.2.0</span>
+          </div>
         </div>
       </div>
     </div>
