@@ -366,7 +366,11 @@ export default function MapControl() {
             body: JSON.stringify({
               text,
               model_id: 'eleven_multilingual_v2',
-              voice_settings: { stability: 0.45, similarity_boost: 0.8 },
+              voice_settings: { 
+                stability: 0.45, 
+                similarity_boost: 0.8,
+                speed: 0.8 
+              },
             }),
           }
         );
@@ -380,7 +384,6 @@ export default function MapControl() {
       }
       
       const audio = new Audio(audioUrl);
-      audio.playbackRate = 1.15;
       audio.onended = () => setIsPlaying(null);
       await audio.play();
     } catch (err) {
@@ -633,7 +636,11 @@ export default function MapControl() {
               body: JSON.stringify({
                 text: reconData.briefing,
                 model_id: 'eleven_multilingual_v2',
-                voice_settings: { stability: 0.45, similarity_boost: 0.8 },
+                voice_settings: { 
+                  stability: 0.45, 
+                  similarity_boost: 0.8,
+                  speed: 0.8 
+                },
               }),
             }
           );
@@ -641,7 +648,6 @@ export default function MapControl() {
             const blob = await ttsResp.blob();
             const audioUrl = URL.createObjectURL(blob);
             const audio = new Audio(audioUrl);
-            audio.playbackRate = 1.15;
             
             // Wait for voice to finish, then start driving
             await new Promise<void>((resolve) => {
