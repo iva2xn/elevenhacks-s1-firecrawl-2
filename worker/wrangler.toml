@@ -13,3 +13,7 @@ binding = "AI"
 [[r2_buckets]]
 binding = "aero_audio_clips"
 bucket_name = "aero-audio-clips"
+
+[[r2_buckets]]
+binding = "aero_images"
+bucket_name = "aero-images"

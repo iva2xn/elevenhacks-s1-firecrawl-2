@@ -2,6 +2,7 @@ export interface Env {
   DB: D1Database;
   AI: Ai;
   aero_audio_clips: R2Bucket;
+  aero_images: R2Bucket;
   ELEVENLABS_API_KEY: string;
   FIRECRAWL_API_KEY: string;
 }
@@ -80,11 +81,27 @@ export default {
       return new Response(audioFile.body, { headers });
     }
 
+    // GET /api/images/:id - Fetch an image from R2
+    if (request.method === 'GET' && pathname.startsWith('/api/images/')) {
+      const imageId = pathname.split('/').pop();
+      if (!imageId) return new Response('Missing image ID', { status: 400 });
+
+      const imageFile = await env.aero_images.get(imageId);
+      if (!imageFile) return new Response('Image not found', { status: 404 });
+
+      const headers = new Headers();
+      imageFile.writeHttpMetadata(headers);
+      headers.set('etag', imageFile.httpEtag);
+      headers.append('Access-Control-Allow-Origin', '*');
+
+      return new Response(imageFile.body, { headers });
+    }
+
     // POST /api/pins - Create a pin with AI classification & Tactical Scouting
     if (request.method === 'POST' && pathname === '/api/pins') {
       try {
         const body: any = await request.json();
-        const { longitude, latitude, text, author_id = null, audio_id = null, scout = false } = body;
+        const { longitude, latitude, text, author_id = null, audio_id = null, images = null, scout = false } = body;
 
         // Perform AI Classification & Content Generation
         let pinType = 'scenic';
@@ -125,9 +142,9 @@ export default {
         console.log('Final Data to Store:', { id, pinType, pinTitle });
 
         await env.DB.prepare(
-          'INSERT INTO pins (id, longitude, latitude, type, text, author_id, timestamp, audio_id, title, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+          'INSERT INTO pins (id, longitude, latitude, type, text, author_id, timestamp, audio_id, title, summary, images) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
         )
-          .bind(id, longitude, latitude, pinType, finalText, author_id, timestamp, audio_id, pinTitle, null)
+          .bind(id, longitude, latitude, pinType, finalText, author_id, timestamp, audio_id, pinTitle, null, images ? JSON.stringify(images) : null)
           .run();
 
         return new Response(JSON.stringify({
@@ -139,6 +156,7 @@ export default {
           latitude,
           timestamp,
           audio_id,
+          images,
           author_id: author_id
         }), {
           status: 201,
@@ -191,6 +209,34 @@ export default {
       }
     }
 
+    // POST /api/upload-image - Upload an image to R2
+    if (request.method === 'POST' && pathname === '/api/upload-image') {
+      try {
+        const imageId = crypto.randomUUID() + '.jpg';
+        const imageData = await request.arrayBuffer();
+
+        // 1. Store in R2
+        try {
+          await env.aero_images.put(imageId, imageData, {
+            httpMetadata: { contentType: 'image/jpeg' },
+          });
+          console.log('Successfully saved image to R2:', imageId);
+        } catch (r2Err: any) {
+          console.error('R2 Image Put Failed:', r2Err.message);
+          throw r2Err;
+        }
+
+        return new Response(JSON.stringify({ image_id: imageId }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: 'Image Upload failed', details: err.message }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
 
 
     // POST /api/users - Create or update a user profile
@@ -214,12 +260,45 @@ export default {
       }
     }
 
-    // POST /api/friends - Follow/Add a friend
+    // POST /api/friends - Send a friend request
     if (request.method === 'POST' && pathname === '/api/friends') {
       try {
         const { user_id, friend_id } = (await request.json()) as any;
+        if (user_id === friend_id) throw new Error('Cannot add self');
+
         await env.DB.prepare(
           'INSERT OR IGNORE INTO friendships (user_id, friend_id, status) VALUES (?, ?, ?)'
+        )
+          .bind(user_id, friend_id, 'pending')
+          .run();
+
+        return new Response(JSON.stringify({ success: true, status: 'pending' }), {
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        });
+      } catch (err: any) {
+        return new Response(JSON.stringify({ error: err.message }), {
+          status: 500,
+          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+        });
+      }
+    }
+
+    // POST /api/friends/accept - Accept a friend request
+    if (request.method === 'POST' && pathname === '/api/friends/accept') {
+      try {
+        const { user_id, friend_id } = (await request.json()) as any;
+        
+        // Update the existing request to accepted
+        // Note: in our schema, 'user_id' is the requester, 'friend_id' is the target (accepting)
+        await env.DB.prepare(
+          'UPDATE friendships SET status = \'accepted\' WHERE user_id = ? AND friend_id = ?'
+        )
+          .bind(friend_id, user_id) // requester comes from the other side
+          .run();
+        
+        // Also create a reciprocal friendship if not existing
+        await env.DB.prepare(
+            'INSERT OR REPLACE INTO friendships (user_id, friend_id, status) VALUES (?, ?, ?)'
         )
           .bind(user_id, friend_id, 'accepted')
           .run();
@@ -235,26 +314,98 @@ export default {
       }
     }
 
-    // GET /api/friends/:id - Get friends list
-    if (request.method === 'GET' && pathname.startsWith('/api/friends/')) {
-      try {
-        const userId = pathname.split('/').pop();
-        const { results } = await env.DB.prepare(
-          'SELECT friend_id FROM friendships WHERE user_id = ? AND status = \'accepted\''
-        )
-          .bind(userId)
-          .all();
-        
-        return new Response(JSON.stringify(results.map((r: any) => r.friend_id)), {
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-        });
-      } catch (err: any) {
-        return new Response(JSON.stringify({ error: err.message }), {
-          status: 500,
-          headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
-        });
+    // GET /api/friends/requests/:id - Get incoming friend requests
+    if (request.method === 'GET' && pathname.startsWith('/api/friends/requests/')) {
+        try {
+          const userId = pathname.split('/').pop();
+          const { results } = await env.DB.prepare(`
+            SELECT f.user_id, u.name, u.avatar_url, u.handle 
+            FROM friendships f 
+            JOIN users u ON f.user_id = u.id 
+            WHERE f.friend_id = ? AND f.status = 'pending'
+          `)
+            .bind(userId)
+            .all();
+          
+          return new Response(JSON.stringify(results), {
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        }
       }
-    }
+
+    // GET /api/friends/list/:id - Get details for all accepted friends
+    if (request.method === 'GET' && pathname.startsWith('/api/friends/list/')) {
+        try {
+          const userId = pathname.split('/').pop();
+          const { results } = await env.DB.prepare(`
+            SELECT u.id, u.name, u.avatar_url, u.handle 
+            FROM friendships f 
+            JOIN users u ON f.friend_id = u.id 
+            WHERE f.user_id = ? AND f.status = 'accepted'
+          `)
+            .bind(userId)
+            .all();
+          
+          return new Response(JSON.stringify(results), {
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+    // GET /api/discovery - Find new people (exclude current user and already followed)
+    if (request.method === 'GET' && pathname === '/api/discovery') {
+        try {
+          const userId = new URL(request.url).searchParams.get('userId');
+          const { results } = await env.DB.prepare(`
+            SELECT id, name, avatar_url, handle 
+            FROM users 
+            WHERE id != ? 
+            AND id NOT IN (SELECT friend_id FROM friendships WHERE user_id = ?)
+            LIMIT 10
+          `)
+            .bind(userId, userId)
+            .all();
+          
+          return new Response(JSON.stringify(results), {
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        } catch (err: any) {
+          return new Response(JSON.stringify({ error: err.message }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+    // GET /api/pins/user/:id - Fetch all pins by a specific user
+    if (request.method === 'GET' && pathname.startsWith('/api/pins/user/')) {
+        try {
+          const authorId = pathname.split('/').pop();
+          const { results } = await env.DB.prepare(`
+            SELECT * FROM pins WHERE author_id = ? ORDER BY timestamp DESC
+          `)
+            .bind(authorId)
+            .all();
+          return new Response(JSON.stringify(results), {
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        } catch (err) {
+          return new Response(JSON.stringify({ error: 'Database error', details: err }), {
+            status: 500,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        }
+      }
 
     // POST /api/tts - Convert text to speech via ElevenLabs
     if (request.method === 'POST' && pathname === '/api/tts') {

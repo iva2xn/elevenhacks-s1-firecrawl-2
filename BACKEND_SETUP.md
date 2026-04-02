@@ -13,10 +13,14 @@ npx wrangler d1 create aero-pins-db
 ```
 *Take note of the `database_id` returned in the terminal.*
 
-### Initialize Schema
-Create the initial `pins` table by running this command:
 ```bash
 npx wrangler d1 execute aero-pins-db --command "CREATE TABLE pins (id TEXT PRIMARY KEY, longitude REAL, latitude REAL, type TEXT, text TEXT, author TEXT, timestamp INTEGER, audio_id TEXT)" --remote
+```
+
+### Update Existing Database (Migration)
+If you already have a database, run this to add image support:
+```bash
+npx wrangler d1 execute aero-pins-db --command "ALTER TABLE pins ADD COLUMN images TEXT" --remote
 ```
 
 ---
@@ -29,10 +33,10 @@ Before running terminal commands, you **must** enable R2 in your Cloudflare dash
 2. Click **R2** in the sidebar.
 3. Click **"Enable R2"**.
 
-### Create the Bucket
-Once enabled, create the bucket for the audio files:
+Once enabled, create the buckets for the files:
 ```bash
 npx wrangler r2 bucket create aero-audio-clips
+npx wrangler r2 bucket create aero-images
 ```
 
 ---

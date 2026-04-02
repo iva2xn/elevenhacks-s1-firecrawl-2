@@ -8,9 +8,8 @@ import * as turf from '@turf/turf';
 const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_ACCESS_TOKEN || '';
 const ELEVENLABS_KEY = process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '';
 
-const MOCK_RIDERS = [
-  { id: 'rider-aero', name: 'Aero Co-Pilot', handle: '@aero', avatar_url: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Aero' },
-  { id: 'rider-mia', name: 'Mia', handle: '@ride_mia', avatar_url: 'https://api.dicebear.com/7.x/avataaars/svg?seed=Mia' }
+const AVATAR_OPTIONS = [
+  'Aero', 'Mia', 'Rider', 'Ace', 'Ghost', 'Shadow', 'Bolt', 'Viper', 'Nova', 'Echo'
 ];
 
 export default function MapControl() {
@@ -21,8 +20,13 @@ export default function MapControl() {
   const [profileName, setProfileName] = useState('');
   const [profileHandle, setProfileHandle] = useState('');
   const [activeTab, setActiveTab] = useState<'profile' | 'friends' | 'settings'>('profile');
-  const [friendsList, setFriendsList] = useState<string[]>([]);
+  const [friendsList, setFriendsList] = useState<any[]>([]);
+  const [incomingRequests, setIncomingRequests] = useState<any[]>([]);
+  const [discoveryList, setDiscoveryList] = useState<any[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState<any | null>(null);
+  const [profilePins, setProfilePins] = useState<any[]>([]);
   const [isGroupOnly, setIsGroupOnly] = useState(false);
+  const [avatarIndex, setAvatarIndex] = useState(0);
 
   const [viewState, setViewState] = useState({
     longitude: -122.4,
@@ -67,11 +71,19 @@ export default function MapControl() {
   const [uploadedAudio_id, setUploadedAudio_id] = useState<string | null>(null);
   const [newPinText, setNewPinText] = useState('');
   const [useScout, setUseScout] = useState(true);
+  const [selectedImages, setSelectedImages] = useState<File[]>([]);
+  const [isUploadingImages, setIsUploadingImages] = useState(false);
+  const [passingPin, setPassingPin] = useState<any | null>(null);
   const [routeIntel, setRouteIntel] = useState<string | null>(null);
   const [commsState, setCommsState] = useState<'off' | 'connecting' | 'on'>('off');
   const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
+  const [showPlotConfirm, setShowPlotConfirm] = useState<{ lng: number, lat: number, routeInfo: any, streets: string[] } | null>(null);
+  const [scoutingStatus, setScoutingStatus] = useState<'idle' | 'searching' | 'complete'>('idle');
+  const [isMissionStarted, setIsMissionStarted] = useState(false);
   const convRef = useRef<any>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [activeAssetIdx, setActiveAssetIdx] = useState(0);
 
   const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_API_URL || 'http://localhost:8787';
 
@@ -126,10 +138,22 @@ export default function MapControl() {
           body: JSON.stringify(user)
         });
 
-        const res = await fetch(`${WORKER_URL}/api/friends/${user.id}`);
+        const res = await fetch(`${WORKER_URL}/api/friends/list/${user.id}`);
         if (res.ok) {
           const list = await res.json();
           setFriendsList(list);
+        }
+
+        const reqs = await fetch(`${WORKER_URL}/api/friends/requests/${user.id}`);
+        if (reqs.ok) {
+          const rlist = await reqs.json();
+          setIncomingRequests(rlist);
+        }
+
+        const disc = await fetch(`${WORKER_URL}/api/discovery?userId=${user.id}`);
+        if (disc.ok) {
+          const dlist = await disc.json();
+          setDiscoveryList(dlist);
         }
       } catch (err) {
         console.warn('Sync failed');
@@ -164,12 +188,16 @@ export default function MapControl() {
     }
   };
 
-  const handleRandomizeAvatar = () => {
+  const handleRandomizeAvatar = (direction: 'next' | 'prev') => {
     if (!currentUser) return;
-    const newSeed = Math.random().toString(36).substring(7);
+    let nextIdx = direction === 'next' ? avatarIndex + 1 : avatarIndex - 1;
+    if (nextIdx >= AVATAR_OPTIONS.length) nextIdx = 0;
+    if (nextIdx < 0) nextIdx = AVATAR_OPTIONS.length - 1;
+    
+    setAvatarIndex(nextIdx);
     const updatedUser = {
       ...currentUser,
-      avatar_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${newSeed}`
+      avatar_url: `https://api.dicebear.com/7.x/avataaars/svg?seed=${AVATAR_OPTIONS[nextIdx]}`
     };
     setCurrentUser(updatedUser);
   };
@@ -187,6 +215,104 @@ export default function MapControl() {
       body: JSON.stringify(currentUser)
     });
   };
+
+  // 🛰️ REAL-TIME GEOLOCATION ENGINE (Non-Dev Mode)
+  useEffect(() => {
+    if (isDevMode) return;
+    
+    if ("geolocation" in navigator) {
+      const watchId = navigator.geolocation.watchPosition(
+        (pos) => {
+          if (isDevMode) return; // double check
+          const newPos = {
+            longitude: pos.coords.longitude,
+            latitude: pos.coords.latitude
+          };
+          setRiderPosition(newPos);
+          riderRef.current.longitude = newPos.longitude;
+          riderRef.current.latitude = newPos.latitude;
+          
+          if (pos.coords.heading !== null) {
+            setRiderBearing(pos.coords.heading);
+            riderRef.current.bearing = pos.coords.heading;
+          }
+        },
+        (err) => console.warn('Geolocation error:', err),
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      );
+      return () => navigator.geolocation.clearWatch(watchId);
+    }
+  }, [isDevMode]);
+
+  // 🎮 SIMULATOR MODE SYNC: Handover logic between Real and Sim
+  useEffect(() => {
+    if (isDevMode) {
+      const sfPos = { longitude: -122.4194, latitude: 37.7749 };
+      
+      // Reset position to SF
+      setRiderPosition(sfPos);
+      riderRef.current.longitude = sfPos.longitude;
+      riderRef.current.latitude = sfPos.latitude;
+      riderRef.current.bearing = 0;
+      setRiderBearing(0);
+      
+      // Reposition camera to SF overview
+      setViewState(prev => ({
+        ...prev,
+        ...sfPos,
+        zoom: 14.5,
+        pitch: 0,
+        bearing: 0
+      }));
+      
+      // Wipe mission states to prevent interference
+      setRouteData(null);
+      setTargetWaypoint(null);
+      setIsMissionStarted(false);
+      setIsNavigating(false);
+      setCurrentInstruction(null);
+      setScoutingStatus('idle');
+      setShowPlotConfirm(null);
+    } else {
+      // 🛰️ Disabling Simulator: Instant Handover to Real GPS
+      if ("geolocation" in navigator) {
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const realPos = {
+              longitude: pos.coords.longitude,
+              latitude: pos.coords.latitude
+            };
+            
+            // Critical: Update both state AND ref for high-performance systems
+            setRiderPosition(realPos);
+            riderRef.current.longitude = realPos.longitude;
+            riderRef.current.latitude = realPos.latitude;
+            
+            setViewState(prev => ({
+              ...prev,
+              ...realPos,
+              zoom: 15,
+              pitch: 0,
+              bearing: 0
+            }));
+            
+            // Clear all mission and routing states
+            setRouteData(null);
+            setTargetWaypoint(null);
+            setIsMissionStarted(false);
+            setIsNavigating(false);
+            setScoutingStatus('idle');
+            setShowPlotConfirm(null);
+          },
+          (err) => {
+            console.warn('GPS Snap-back failed', err);
+            // Fallback: stay where we are but disable sim
+          },
+          { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+      }
+    }
+  }, [isDevMode]);
 
   // Refs for high-performance, synchronous animation tracking
   const riderRef = useRef({
@@ -419,6 +545,16 @@ export default function MapControl() {
     mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
   };
 
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      setSelectedImages(prev => [...prev, ...Array.from(e.target.files!)]);
+    }
+  };
+
+  const removeImage = (index: number) => {
+    setSelectedImages(prev => prev.filter((_, i) => i !== index));
+  };
+
   const handleCreatePin = async () => {
     if (!isCreatingPin || !audioBlob) return;
     setRecordingState('transcribing');
@@ -442,13 +578,39 @@ export default function MapControl() {
       console.error('Final upload failed', err);
     }
 
-    // 2. Create the pin
+    // 2. Upload Images
+    let imageIds: string[] = [];
+    if (selectedImages.length > 0) {
+      setIsUploadingImages(true);
+      try {
+        const uploadPromises = selectedImages.map(async (file) => {
+          const resp = await fetch(`${WORKER_URL}/api/upload-image`, {
+            method: 'POST',
+            body: await file.arrayBuffer(),
+            headers: { 'Content-Type': file.type }
+          });
+          if (resp.ok) {
+            const data = await resp.json();
+            return data.image_id;
+          }
+          return null;
+        });
+        const results = await Promise.all(uploadPromises);
+        imageIds = results.filter(id => id !== null) as string[];
+      } catch (err) {
+        console.error('Image uploads failed', err);
+      }
+      setIsUploadingImages(false);
+    }
+
+    // 3. Create the pin
     const pinRequest = {
       longitude: isCreatingPin.lng,
       latitude: isCreatingPin.lat,
       text: transcription || 'Voice Message',
       author_id: currentUser.id,
-      audio_id: audio_id
+      audio_id: audio_id,
+      images: imageIds.length > 0 ? imageIds : null
     };
 
     try {
@@ -470,6 +632,7 @@ export default function MapControl() {
     setIsCreatingPin(null);
     setAudioBlob(null);
     setPreviewUrl(null);
+    setSelectedImages([]);
     setUploadedAudio_id(null);
     setRecordingState('idle');
   };
@@ -482,9 +645,44 @@ export default function MapControl() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user_id: currentUser.id, friend_id: friendId })
       });
-      setFriendsList(prev => Array.from(new Set([...prev, friendId])));
+      // Refresh discovery
+      const disc = await fetch(`${WORKER_URL}/api/discovery?userId=${currentUser.id}`);
+      if (disc.ok) setDiscoveryList(await disc.json());
     } catch (err) {
       console.error('Follow failed', err);
+    }
+  };
+
+  const handleAcceptFriend = async (requesterId: string) => {
+    try {
+      if (!currentUser?.id) return;
+      await fetch(`${WORKER_URL}/api/friends/accept`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: currentUser.id, friend_id: requesterId })
+      });
+      
+      // Refresh lists
+      const [friends, reqs] = await Promise.all([
+        fetch(`${WORKER_URL}/api/friends/list/${currentUser.id}`).then(r => r.json()),
+        fetch(`${WORKER_URL}/api/friends/requests/${currentUser.id}`).then(r => r.json())
+      ]);
+      setFriendsList(friends);
+      setIncomingRequests(reqs);
+    } catch (err) {
+      console.error('Accept failed', err);
+    }
+  };
+
+  const handleViewProfile = async (profile: any) => {
+    setSelectedProfile(profile);
+    try {
+      const resp = await fetch(`${WORKER_URL}/api/pins/user/${profile.user_id || profile.id}`);
+      if (resp.ok) {
+        setProfilePins(await resp.json());
+      }
+    } catch (err) {
+      console.error('Failed to fetch profile pins');
     }
   };
 
@@ -547,32 +745,38 @@ export default function MapControl() {
     }
   };
 
-  const filteredPins = pins.filter(p => !isGroupOnly || friendsList.includes(p.author_id) || p.author_id === currentUser.id);
+  const filteredPins = pins.filter(p => !isGroupOnly || friendsList.some(f => f.id === p.author_id) || p.author_id === currentUser.id);
 
   // 🛰️ PROXIMITY ENGINE: Auto-trigger audio when near pins
   useEffect(() => {
     if (isPlaying || filteredPins.length === 0) return;
 
-    for (const pin of filteredPins) {
-      if (visitedPins.has(pin.id)) continue;
+    filteredPins.forEach(pin => {
+      if (visitedPins.has(pin.id)) return;
+      
+      const distance = turf.distance(
+        [riderPosition.longitude, riderPosition.latitude], 
+        [pin.longitude, pin.latitude], 
+        { units: 'meters' }
+      );
 
-      const riderPoint = turf.point([riderPosition.longitude, riderPosition.latitude]);
-      const pinPoint = turf.point([pin.longitude, pin.latitude]);
-      const distance = turf.distance(riderPoint, pinPoint, { units: 'meters' });
-
-      // Trigger zone: 100 meters
       if (distance < 100) {
-        setVisitedPins(prev => new Set(prev).add(pin.id));
-        // playVoice signature: (id: string, text: string, type: 'ai' | 'original', audioId?: string)
+        setVisitedPins(prev => {
+          const next = new Set(prev);
+          next.add(pin.id);
+          return next;
+        });
+        setPassingPin(pin);
+        setTimeout(() => setPassingPin(null), 8000); 
+
         if (pin.audio_id) {
           playVoice(pin.id, pin.text, 'original', pin.audio_id);
         } else {
           playVoice(pin.id, pin.text, 'ai');
         }
-        break; // Only play one at a time
       }
-    }
-  }, [riderPosition, pins, visitedPins, isPlaying]);
+    });
+  }, [riderPosition, filteredPins, visitedPins, isPlaying]);
 
   const handleMapClick = async (evt: any) => {
     const { lng, lat } = evt.lngLat;
@@ -583,28 +787,49 @@ export default function MapControl() {
       return;
     }
     
-    if (isNavigating) return;
+    if (isNavigating || isMissionStarted) return;
     
     const startCoords: [number, number] = [riderPosition.longitude, riderPosition.latitude];
     const endCoords: [number, number] = [lng, lat];
     
-    // Step 1: Get the route and draw it on the map
+    // Step 1: Get the route
     const routeInfo = await fetchRoute(startCoords, endCoords);
     if (!routeInfo) return;
     
-    setRouteData({ type: 'Feature', geometry: routeInfo.geometry });
-    setTargetWaypoint(endCoords);
-    
-    // Step 2: Extract street names from route steps
     const steps = routeInfo.steps;
     const streets = steps 
       ? Array.from(new Set(steps.map((s: any) => s.name).filter((n: string) => n && n !== '')))
       : [];
+
+    setRouteData({ type: 'Feature', geometry: routeInfo.geometry });
+    setTargetWaypoint(endCoords);
+    (window as any)._lastRouteInfo = routeInfo;
+    setScoutingStatus('idle');
+    setShowPlotConfirm({ lng, lat, routeInfo, streets: streets as string[] });
+  };
+
+  const handleStartMission = () => {
+    if (!showPlotConfirm) return;
+    setIsMissionStarted(true);
+    setShowPlotConfirm(null);
     
-    console.log('🛰️ Route plotted. Streets:', streets);
-    console.log('📍 From:', startCoords, 'To:', endCoords);
+    if (isDevMode) {
+      animateRider(showPlotConfirm.routeInfo);
+    } else {
+      setIsNavigating(true);
+      // Real-time tracking is handled by the useEffect
+    }
+  };
+
+  const handleRunRecon = async () => {
+    if (!showPlotConfirm) return;
+    setScoutingStatus('searching');
     
-    // Step 3: Send to backend — reverse geocode cities, Firecrawl search, LLM summary
+    const { streets, routeInfo } = showPlotConfirm;
+    const startCoords: [number, number] = [riderPosition.longitude, riderPosition.latitude];
+    const endCoords: [number, number] = [showPlotConfirm.lng, showPlotConfirm.lat];
+
+    // Send to backend — reverse geocode cities, Firecrawl search, LLM summary
     try {
       const reconResp = await fetch(`${WORKER_URL}/api/recon/route`, {
         method: 'POST',
@@ -619,11 +844,8 @@ export default function MapControl() {
       const reconData = await reconResp.json();
       
       if (reconData.briefing) {
-        console.log('📡 BRIEFING:', reconData.briefing);
-        console.log('📍 Route:', reconData.startPlace, '→', reconData.endPlace);
         setRouteIntel(reconData.briefing);
         
-        // Step 4: Generate voice summary and play it
         try {
           const ttsResp = await fetch(
             `https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM`,
@@ -636,11 +858,7 @@ export default function MapControl() {
               body: JSON.stringify({
                 text: reconData.briefing,
                 model_id: 'eleven_multilingual_v2',
-                voice_settings: { 
-                  stability: 0.45, 
-                  similarity_boost: 0.8,
-                  speed: 0.8 
-                },
+                voice_settings: { stability: 0.45, similarity_boost: 0.8, speed: 0.8 },
               }),
             }
           );
@@ -648,28 +866,16 @@ export default function MapControl() {
             const blob = await ttsResp.blob();
             const audioUrl = URL.createObjectURL(blob);
             const audio = new Audio(audioUrl);
-            
-            // Wait for voice to finish, then start driving
-            await new Promise<void>((resolve) => {
-              audio.onended = () => resolve();
-              audio.onerror = () => resolve();
-              audio.play().catch(() => resolve());
-            });
-            console.log('🔊 Briefing complete');
+            await audio.play();
           }
         } catch (ttsErr) {
           console.error('TTS failed:', ttsErr);
         }
-      } else if (reconData.error) {
-        console.error('Recon error:', reconData.error);
       }
     } catch (err) {
       console.error('Recon request failed:', err);
     }
-    
-    // Step 5: NOW start driving
-    setTargetWaypoint(null);
-    animateRider(routeInfo);
+    setScoutingStatus('complete');
   };
 
 
@@ -728,42 +934,48 @@ export default function MapControl() {
           </Source>
         )}
 
-        {currentInstruction && (
+        {currentInstruction && typeof riderPosition.longitude === 'number' && (
           <Marker longitude={riderPosition.longitude} latitude={riderPosition.latitude} anchor="bottom" offset={[0, -60]}>
-            <div className="bg-[#FF5D8F] text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in zoom-in slide-in-from-bottom-2 duration-300 border border-white/20">
-              <span className="font-bold text-sm tracking-tight capitalize">{currentInstruction}</span>
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
-                <path d="M12 19V5m0 0l-7 7m7-7l7 7" />
-              </svg>
+            <div>
+              <div className="bg-[#FF5D8F] text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-3 animate-in fade-in zoom-in slide-in-from-bottom-2 duration-300 border border-white/20">
+                <span className="font-bold text-sm tracking-tight capitalize">{currentInstruction}</span>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
+                  <path d="M12 19V5m0 0l-7 7m7-7l7 7" />
+                </svg>
+              </div>
+              <div className="w-0 h-0 border-l-[8px] border-l-transparent border-r-[8px] border-r-transparent border-t-[8px] border-t-[#FF5D8F] mx-auto mt-[-1px]"></div>
             </div>
-            <div className="w-0 h-0 border-l-[8px] border-l-transparent border-r-[8px] border-r-transparent border-t-[8px] border-t-[#FF5D8F] mx-auto mt-[-1px]"></div>
           </Marker>
         )}
 
-        {targetWaypoint && (
+        {targetWaypoint && typeof targetWaypoint[0] === 'number' && typeof targetWaypoint[1] === 'number' && (
           <Marker longitude={targetWaypoint[0]} latitude={targetWaypoint[1]} anchor="bottom">
-            <svg viewBox="0 0 100 100" className="w-8 h-8 drop-shadow-lg">
-              <path d="M50 0 C30 0 15 15 15 35 C15 60 50 100 50 100 C50 100 85 60 85 35 C85 15 70 0 50 0 Z" fill="#FF5D8F" />
-              <circle cx="50" cy="35" r="10" fill="white" fillOpacity="0.8" />
-            </svg>
+            <div className="pointer-events-none">
+              <svg viewBox="0 0 100 100" className="w-8 h-8 drop-shadow-lg">
+                <path d="M50 0 C30 0 15 15 15 35 C15 60 50 100 50 100 C50 100 85 60 85 35 C85 15 70 0 50 0 Z" fill="#FF5D8F" />
+                <circle cx="50" cy="35" r="10" fill="white" fillOpacity={0.8} />
+              </svg>
+            </div>
           </Marker>
         )}
 
-        <Marker 
-          longitude={riderPosition.longitude} 
-          latitude={riderPosition.latitude} 
-          anchor="center"
-          rotationAlignment="map"
-          rotation={riderBearing}
-        >
-          <div className="relative transition-transform duration-75 ease-linear">
-            <div className="w-12 h-12 flex items-center justify-center">
-              <svg viewBox="0 0 100 100" className="w-10 h-10 drop-shadow-md relative z-10">
-                <path d="M50 10 L85 85 L50 70 L15 85 Z" fill="#FF5D8F" />
-              </svg>
+        {typeof riderPosition.longitude === 'number' && (
+          <Marker 
+            longitude={riderPosition.longitude} 
+            latitude={riderPosition.latitude} 
+            anchor="center"
+            rotationAlignment="map"
+            rotation={riderBearing}
+          >
+            <div className="relative transition-transform duration-75 ease-linear pointer-events-none">
+              <div className="w-12 h-12 flex items-center justify-center">
+                <svg viewBox="0 0 100 100" className="w-10 h-10 drop-shadow-md relative z-10">
+                  <path d="M50 10 L85 85 L50 70 L15 85 Z" fill="#FF5D8F" />
+                </svg>
+              </div>
             </div>
-          </div>
-        </Marker>
+          </Marker>
+        )}
 
         {filteredPins.map(pin => (
           <Marker 
@@ -804,7 +1016,7 @@ export default function MapControl() {
             onClose={() => setSelectedPin(null)}
             closeButton={false}
             className="pin-popup"
-            offset={45}
+            offset={65} // Added extra breathing room from the pin
           >
             <div className="bg-[#0A0A0A]/95 backdrop-blur-2xl p-6 rounded-2xl border border-white/10 shadow-3xl w-64 animate-in zoom-in-95 fade-in-0 duration-300 overflow-hidden relative group">
               <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-[#FF5D8F] to-transparent opacity-50"></div>
@@ -821,6 +1033,25 @@ export default function MapControl() {
               <h3 className="text-white text-xl font-black leading-tight mb-6 tracking-tight">
                 {selectedPin.title && selectedPin.title.length < 50 ? selectedPin.title : (selectedPin.text.length > 30 ? selectedPin.text.substring(0, 30) + '...' : selectedPin.text)}
               </h3>
+              
+              {selectedPin.images && (
+                <div className="flex gap-2 overflow-x-auto no-scrollbar mb-6">
+                  {(() => {
+                    try {
+                      const imgs = JSON.parse(selectedPin.images);
+                      return Array.isArray(imgs) ? imgs.map((imgId: string) => (
+                        <div 
+                          key={imgId} 
+                          onClick={() => setPassingPin(selectedPin)}
+                          className="flex-shrink-0 w-20 h-20 rounded-xl overflow-hidden border border-white/10 cursor-pointer hover:border-[#FF5D8F] transition-all"
+                        >
+                          <img src={`${WORKER_URL}/api/images/${imgId}`} className="w-full h-full object-cover" alt="Pin Intel" />
+                        </div>
+                      )) : null;
+                    } catch (e) { return null; }
+                  })()}
+                </div>
+              )}
               
               <div className="flex">
                 <button
@@ -894,6 +1125,35 @@ export default function MapControl() {
                   </div>
                 )}
  
+                {/* Image Picker Section */}
+                {recordingState === 'preview' && (
+                  <div className="w-full space-y-4 pt-4 border-t border-white/5">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Attach Visual Intel</h3>
+                      <span className="text-[10px] text-[#FF5D8F] font-black">{selectedImages.length}</span>
+                    </div>
+                    
+                    <div className="flex gap-3 overflow-x-auto no-scrollbar py-2">
+                      {selectedImages.map((file, idx) => (
+                        <div key={idx} className="relative flex-shrink-0 w-20 h-20 rounded-2xl overflow-hidden border border-white/10 group">
+                          <img src={URL.createObjectURL(file)} className="w-full h-full object-cover" />
+                          <button 
+                            onClick={() => removeImage(idx)}
+                            className="absolute top-1.5 right-1.5 w-6 h-6 bg-black/80 rounded-full flex items-center justify-center text-white opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500"
+                          >
+                            <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M6 18L18 6M6 6l12 12" /></svg>
+                          </button>
+                        </div>
+                      ))}
+                      <label className="flex-shrink-0 w-20 h-20 rounded-2xl border-2 border-dashed border-white/10 flex flex-col items-center justify-center text-zinc-500 hover:border-[#FF5D8F] hover:text-[#FF5D8F] hover:bg-[#FF5D8F]/5 transition-all cursor-pointer">
+                        <input type="file" multiple accept="image/*" className="hidden" onChange={handleImageSelect} />
+                        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M12 4v16m8-8H4" /></svg>
+                        <span className="text-[8px] font-black uppercase mt-1">Add</span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+ 
               {recordingState === 'transcribing' && (
                   <div className="flex flex-col items-center gap-4">
                     <div className="w-20 h-20 rounded-full border-2 border-[#FF5D8F]/30 flex items-center justify-center">
@@ -955,23 +1215,46 @@ export default function MapControl() {
               <p className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Co-Pilot Social Network</p>
             </div>
 
-            <div className="relative mx-auto w-32 h-32">
-              <div className="absolute inset-0 bg-white/20 blur-2xl rounded-full"></div>
-              <div className="relative w-full h-full rounded-full border-2 border-[#FF5D8F] overflow-hidden bg-zinc-900 shadow-2xl">
-                 <img src={currentUser?.avatar_url} className="w-full h-full object-cover" />
+            <div className="relative mx-auto w-40 h-40 group">
+              <div className="absolute inset-0 bg-[#FF5D8F]/20 blur-3xl rounded-full animate-pulse"></div>
+              <div className="relative w-full h-full rounded-full border-4 border-[#FF5D8F] p-1.5 bg-[#0A0A0A] shadow-2xl overflow-hidden flex items-center justify-center">
+                 <img src={currentUser?.avatar_url} className="w-full h-full object-cover rounded-full" alt="Avatar" />
+                 
+                 {/* Swipe/Click Controls */}
+                 <button 
+                  onClick={() => handleRandomizeAvatar('prev')}
+                  className="absolute left-0 top-1/2 -translate-y-1/2 p-2 bg-black/60 text-white rounded-r-xl opacity-0 group-hover:opacity-100 transition-opacity"
+                 >
+                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M15 19l-7-7 7-7" /></svg>
+                 </button>
+                 <button 
+                  onClick={() => handleRandomizeAvatar('next')}
+                  className="absolute right-0 top-1/2 -translate-y-1/2 p-2 bg-black/60 text-white rounded-l-xl opacity-0 group-hover:opacity-100 transition-opacity"
+                 >
+                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M9 5l7 7-7 7" /></svg>
+                 </button>
               </div>
+              <p className="absolute -bottom-4 left-1/2 -translate-x-1/2 text-[9px] font-black text-[#FF5D8F] uppercase tracking-widest whitespace-nowrap bg-black px-2 py-0.5 border border-[#FF5D8F]/30 rounded">Slide to Change</p>
             </div>
 
-            <div className="space-y-1">
-              <p className="text-white text-xl font-bold">{currentUser?.name}</p>
-              <p className="text-[#FF5D8F] text-xs font-black uppercase tracking-widest">{currentUser?.handle}</p>
+            <div className="space-y-4 pt-4">
+              <div className="space-y-1.5">
+                <label className="text-[9px] uppercase tracking-widest text-zinc-500 font-bold">Your Callsign</label>
+                <input 
+                  type="text" 
+                  value={profileName} 
+                  onChange={(e) => setProfileName(e.target.value)}
+                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white text-lg font-black focus:outline-none focus:border-[#FF5D8F] transition-all text-center"
+                  placeholder="Rider Name"
+                />
+              </div>
             </div>
 
             <button 
               onClick={handleFinishOnboarding}
               className="w-full py-5 bg-[#FF5D8F] hover:bg-[#FF7DA5] text-white font-black text-xs uppercase tracking-[0.2em] rounded-2xl shadow-xl shadow-[#FF5D8F]/20 transition-all active:scale-95"
             >
-              Start Riding
+              Confirm Identity
             </button>
           </div>
         </div>
@@ -1009,26 +1292,46 @@ export default function MapControl() {
         </button>
       </div>
 
+      {/* Dev Mode Play Control: Top Left */}
+      {isDevMode && routeData && (
+        <div className={`absolute top-6 left-6 z-20 transition-all duration-500 animate-in slide-in-from-top-4 ${isSidebarOpen ? '-translate-y-12 opacity-0' : 'translate-y-0 opacity-100'}`}>
+          <button 
+            onClick={() => {
+              const currentRouteInfo = showPlotConfirm?.routeInfo || (window as any)._lastRouteInfo;
+              if (currentRouteInfo) {
+                setIsMissionStarted(true);
+                animateRider(currentRouteInfo);
+              }
+            }}
+            className="bg-[#FF5D8F] border border-white/20 w-14 h-14 rounded-2xl shadow-2xl text-white hover:bg-[#FF7DA5] hover:scale-110 active:scale-95 transition-all flex items-center justify-center"
+          >
+             <svg className="w-6 h-6 fill-current" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </button>
+        </div>
+      )}
+
       <div className={`absolute top-6 right-6 z-10 w-80 h-[calc(100vh-3rem)] pointer-events-none transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] ${isSidebarOpen ? 'translate-x-0 opacity-100 scale-100' : 'translate-x-12 opacity-0 scale-95'}`}>
-        <div className="bg-black/90 backdrop-blur-3xl border border-white/10 h-full rounded-[2.5rem] shadow-4xl relative flex flex-col pointer-events-auto overflow-hidden ring-1 ring-white/5">
+        <div className="bg-[#0A0A0A] border border-white/10 h-full rounded-[2.5rem] shadow-4xl relative flex flex-col pointer-events-auto overflow-hidden">
+          
+          {/* New Sleek Closer - Relocated to top right corner of sidebar */}
+          <button 
+             onClick={() => setIsSidebarOpen(false)}
+             className="absolute top-6 right-6 w-9 h-9 flex items-center justify-center bg-zinc-900 border border-white/5 rounded-full text-zinc-500 hover:text-white transition-all hover:bg-zinc-800 hover:scale-110 active:scale-95 shadow-xl z-[60]"
+          >
+             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
+
           {/* Sidebar Tabs */}
-          <div className="flex bg-white/5 p-1.5 mx-8 mt-8 mb-6 rounded-2xl border border-white/10 relative">
+          <div className="flex bg-white/5 p-1 mx-6 mt-[4.5rem] mb-6 rounded-2xl border border-white/10 relative">
              {(['profile', 'friends', 'settings'] as const).map(tab => (
                <button 
                 key={tab}
                 onClick={() => setActiveTab(tab)}
-                className={`flex-1 py-2.5 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activeTab === tab ? 'bg-[#FF5D8F] text-white shadow-lg shadow-[#FF5D8F]/20' : 'text-zinc-500 hover:text-white'}`}
+                className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${activeTab === tab ? 'bg-[#FF5D8F] text-white shadow-lg shadow-[#FF5D8F]/20' : 'text-zinc-500 hover:text-white'}`}
                >
                  {tab}
                </button>
              ))}
-             {/* New Sleek Closer */}
-             <button 
-                onClick={() => setIsSidebarOpen(false)}
-                className="absolute -top-3 -right-3 w-8 h-8 flex items-center justify-center bg-black/90 border border-white/10 rounded-full text-white/40 hover:text-[#FF5D8F] transition-all hover:scale-110 active:scale-95 shadow-xl ring-4 ring-[#0A0A0A]"
-             >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M6 18L18 6M6 6l12 12" /></svg>
-             </button>
           </div>
 
           <div className="flex-1 overflow-y-auto no-scrollbar px-10 pb-8">
@@ -1042,7 +1345,7 @@ export default function MapControl() {
                        </div>
                     </div>
                     <button 
-                      onClick={handleRandomizeAvatar}
+                      onClick={() => handleRandomizeAvatar('next')}
                       className="absolute bottom-0 right-0 p-2.5 bg-[#FF5D8F] text-white rounded-full shadow-lg hover:scale-110 active:scale-95 transition-all ring-4 ring-[#0A0A0A]"
                     >
                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
@@ -1086,42 +1389,175 @@ export default function MapControl() {
 
             {activeTab === 'friends' && (
               <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="space-y-6">
-                  <div className="flex items-center justify-between px-1">
-                    <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Discovery</h3>
-                    <div className="flex items-center gap-1.5 bg-[#FF5D8F]/10 border border-[#FF5D8F]/20 px-2 py-1 rounded-full">
-                       <div className="w-1.5 h-1.5 rounded-full bg-[#FF5D8F] shadow-[0_0_8px_#FF5D8F]" />
-                       <span className="text-[8px] font-black text-[#FF5D8F] uppercase tracking-widest">Online</span>
+                {selectedProfile ? (
+                  <div className="space-y-6">
+                    <button 
+                      onClick={() => setSelectedProfile(null)}
+                      className="flex items-center gap-2 text-zinc-500 hover:text-white transition-colors group px-1"
+                    >
+                      <svg className="w-4 h-4 transition-transform group-hover:-translate-x-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M15 19l-7-7 7-7" /></svg>
+                      <span className="text-[10px] font-black uppercase tracking-widest">Back to Friends</span>
+                    </button>
+
+                    <div className="flex flex-col items-center gap-4 py-4 bg-white/5 border border-white/10 rounded-3xl mx-1">
+                      <div className="w-20 h-20 rounded-full border-2 border-[#FF5D8F] p-1">
+                        <div className="w-full h-full rounded-full overflow-hidden bg-zinc-900 border border-white/10">
+                           <img src={selectedProfile.avatar_url} className="w-full h-full object-cover" alt="Profile" />
+                        </div>
+                      </div>
+                      <div className="text-center">
+                        <h2 className="text-white font-black text-xl tracking-tight">{selectedProfile.name}</h2>
+                        <p className="text-[#FF5D8F] text-[9px] font-black uppercase tracking-widest">{selectedProfile.handle}</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4 px-1">
+                       <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Travel Pins</h3>
+                       {profilePins.length > 0 ? (
+                         <div className="space-y-3">
+                           {profilePins.map(pin => (
+                             <div key={pin.id} className="group bg-white/5 border border-white/10 rounded-2xl p-5 transition-all hover:bg-white/[0.08] hover:border-[#FF5D8F]/20">
+                               <div className="flex items-center justify-between mb-3">
+                                 <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded-lg border ${pin.type === 'hazard' ? 'bg-red-500/10 border-red-500/30 text-red-500' : 'bg-[#FF5D8F]/10 border-[#FF5D8F]/30 text-[#FF5D8F]'}`}>
+                                   {pin.type}
+                                 </span>
+                                 <span className="text-[9px] text-zinc-600 font-bold uppercase tracking-widest">
+                                   {new Date(pin.timestamp).toLocaleDateString()}
+                                 </span>
+                               </div>
+                               <p className="text-white text-sm font-bold leading-relaxed mb-4 line-clamp-3">{pin.title || pin.text}</p>
+                               <button 
+                                 onClick={() => playVoice(pin.id, pin.text, pin.audio_id ? 'original' : 'ai', pin.audio_id)}
+                                 className="w-full flex items-center justify-center gap-3 py-3 bg-white/5 hover:bg-[#FF5D8F] hover:text-white border border-white/10 hover:border-transparent rounded-xl transition-all group/btn"
+                               >
+                                 <svg className="w-4 h-4 transition-transform group-hover/btn:scale-110" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                 <span className="text-[10px] font-black uppercase tracking-widest">Listen to Note</span>
+                               </button>
+                             </div>
+                           ))}
+                         </div>
+                       ) : (
+                         <div className="py-12 text-center bg-white/2 border border-white/10 border-dashed rounded-3xl opacity-50">
+                           <p className="text-zinc-600 text-[10px] font-black uppercase tracking-widest">No intelligence gathered</p>
+                         </div>
+                       )}
                     </div>
                   </div>
-                  
-                  <div className="space-y-2.5">
-                    {MOCK_RIDERS.map(rider => (
-                      <div key={rider.id} className="group bg-white/5 border border-white/10 rounded-[1.5rem] p-4 flex items-center gap-4 transition-all hover:bg-white/[0.08] hover:border-white/20">
-                        <div className="w-12 h-12 rounded-2xl overflow-hidden border border-white/10 bg-zinc-900 group-hover:scale-105 transition-transform">
-                           <img src={rider.avatar_url} className="w-full h-full object-cover" />
+                ) : (
+                  <div className="space-y-10">
+                    {/* Friend Requests Section */}
+                    {incomingRequests.length > 0 && (
+                      <div className="space-y-4">
+                        <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest px-1">Friend Requests</h3>
+                        <div className="space-y-3">
+                          {incomingRequests.map((req, idx) => (
+                            <div key={req.user_id || `req-${idx}`} className="bg-[#FF5D8F]/5 border border-[#FF5D8F]/20 rounded-3xl p-5 flex items-center gap-4 animate-in slide-in-from-right-4 duration-300">
+                              <div className="w-12 h-12 rounded-2xl overflow-hidden border border-white/10 shadow-lg">
+                                 <img src={req.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${req.user_id}`} className="w-full h-full object-cover" alt="Avatar" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                 <p className="text-white font-black text-sm truncate">{req.name || 'Anonymous Rider'}</p>
+                                 <p className="text-[#FF5D8F] text-[10px] font-black uppercase truncate">{req.handle || '@unknown'}</p>
+                              </div>
+                              <button 
+                                onClick={() => handleAcceptFriend(req.user_id)}
+                                className="w-10 h-10 flex items-center justify-center bg-[#FF5D8F] text-white rounded-2xl shadow-xl shadow-[#FF5D8F]/30 hover:scale-110 active:scale-95 transition-all"
+                              >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M5 13l4 4L19 7" /></svg>
+                              </button>
+                            </div>
+                          ))}
                         </div>
-                        <div className="flex-1 min-w-0">
-                           <p className="text-white font-black text-xs truncate">{rider.name}</p>
-                           <p className="text-[#FF5D8F] text-[9px] font-black uppercase tracking-tighter truncate">{rider.handle}</p>
+                      </div>
+                    )}
+
+                    {/* Friends List Section */}
+                    <div className="space-y-4">
+                      <div className="flex items-center justify-between px-1">
+                        <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Squadron</h3>
+                        <div className="px-2 py-0.5 bg-white/5 border border-white/10 rounded-full">
+                          <span className="text-[9px] font-black text-white">{friendsList.length}</span>
                         </div>
-                        {currentUser?.id !== rider.id && (
-                          <button 
-                            onClick={() => handleFollow(rider.id)}
-                            disabled={friendsList.includes(rider.id)}
-                            className={`p-3 rounded-2xl border transition-all ${friendsList.includes(rider.id) ? 'bg-green-500/10 border-green-500/30 text-green-500' : 'bg-white/5 border-white/10 text-white/40 hover:text-[#FF5D8F] hover:border-[#FF5D8F]/50 ring-0 hover:ring-4 ring-[#FF5D8F]/10'}`}
+                      </div>
+                      
+                      {friendsList.length > 0 ? (
+                        <div className="space-y-3">
+                          {friendsList.map((friend, idx) => (
+                            <div 
+                              key={friend.id || `friend-${idx}`} 
+                              onClick={() => handleViewProfile(friend)}
+                              className="cursor-pointer group bg-white/5 border border-white/10 rounded-3xl p-5 flex items-center gap-4 transition-all hover:bg-white/[0.08] hover:border-[#FF5D8F]/30 hover:translate-x-1"
+                            >
+                              <div className="w-14 h-14 rounded-2xl overflow-hidden border border-white/10 bg-zinc-900 shadow-inner group-hover:scale-105 transition-transform">
+                                 <img src={friend.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${friend.id}`} className="w-full h-full object-cover" alt="Avatar" />
+                              </div>
+                              <div className="flex-1 min-w-0 text-left">
+                                 <p className="text-white font-black text-sm truncate">{friend.name || 'Rider'}</p>
+                                 <p className="text-[#FF5D8F] text-[10px] font-black uppercase tracking-tighter truncate">{friend.handle || '@handle'}</p>
+                              </div>
+                              <div className="opacity-0 group-hover:opacity-100 transition-all -translate-x-2 group-hover:translate-x-0">
+                                <svg className="w-5 h-5 text-[#FF5D8F]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M9 5l7 7-7 7" /></svg>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="py-12 text-center bg-white/2 border border-white/10 border-dashed rounded-[2.5rem] flex flex-col items-center gap-3">
+                           <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center text-zinc-700">
+                             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                           </div>
+                           <p className="text-zinc-600 text-[10px] font-black uppercase tracking-widest">No squadron data</p>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Discovery Section */}
+                    <div className="space-y-6 pt-6 border-t border-white/5">
+                      <div className="flex items-center justify-between px-1">
+                        <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Discovery</h3>
+                        <div className="flex items-center gap-1.5 bg-[#FF5D8F]/10 border border-[#FF5D8F]/20 px-2.5 py-1 rounded-full">
+                           <div className="w-1.5 h-1.5 rounded-full bg-[#FF5D8F] shadow-[0_0_8px_#FF5D8F] animate-pulse" />
+                           <span className="text-[9px] font-black text-[#FF5D8F] uppercase tracking-widest">Live Feed</span>
+                        </div>
+                      </div>
+                      
+                      <div className="space-y-3">
+                        {discoveryList.length > 0 ? discoveryList.slice(0, 10).map((rider, idx) => (
+                          <div 
+                            key={rider.id || `disc-${idx}`} 
+                            onClick={() => handleViewProfile(rider)}
+                            className="cursor-pointer group bg-white/5 border border-white/10 rounded-3xl p-5 flex items-center gap-4 transition-all hover:bg-white/[0.08] hover:border-white/20"
                           >
-                            {friendsList.includes(rider.id) ? (
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M5 13l4 4L19 7" /></svg>
-                            ) : (
-                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M12 4v16m8-8H4" /></svg>
+                            <div className="w-14 h-14 rounded-2xl overflow-hidden border border-white/10 bg-zinc-900 group-hover:scale-105 transition-transform">
+                               <img src={rider.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${rider.id}`} className="w-full h-full object-cover" alt="Avatar" />
+                            </div>
+                            <div className="flex-1 min-w-0 text-left">
+                               <p className="text-white font-black text-sm truncate">{rider.name || 'Rider'}</p>
+                               <p className="text-[#FF5D8F] text-[10px] font-black uppercase tracking-tighter truncate">{rider.handle || '@handle'}</p>
+                            </div>
+                            {currentUser?.id !== rider.id && (
+                              <button 
+                                onClick={(e) => { e.stopPropagation(); handleFollow(rider.id); }}
+                                disabled={friendsList.some(f => f.id === rider.id)}
+                                className={`w-10 h-10 flex items-center justify-center rounded-2xl border transition-all ${friendsList.some(f => f.id === rider.id) ? 'bg-green-500/10 border-green-500/30 text-green-500' : 'bg-white/5 border-white/10 text-white/40 hover:text-[#FF5D8F] hover:border-[#FF5D8F]/50 ring-0 hover:ring-4 ring-[#FF5D8F]/10'}`}
+                              >
+                                {friendsList.some(f => f.id === rider.id) ? (
+                                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M5 13l4 4L19 7" /></svg>
+                                ) : (
+                                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M12 4v16m8-8H4" /></svg>
+                                )}
+                              </button>
                             )}
-                          </button>
+                          </div>
+                        )) : (
+                          <div className="py-12 text-center bg-white/2 border border-white/10 border-dashed rounded-[2.5rem]">
+                            <p className="text-zinc-600 text-[10px] font-black uppercase tracking-widest">Scanning for riders...</p>
+                          </div>
                         )}
                       </div>
-                    ))}
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             )}
 
@@ -1161,46 +1597,6 @@ export default function MapControl() {
                       </div>
                     </div>
                   </button>
-                  <div className="bg-black/20 border border-white/5 rounded-3xl p-6 space-y-6">
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <h4 className="text-white text-xs font-black uppercase tracking-widest">Aero Comms</h4>
-                        <p className="text-[#FF5D8F] text-[8px] font-bold uppercase tracking-tighter shadow-sm">{commsState === 'on' ? 'Satellite Link Established' : 'Radio Offline'}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                         {isAgentSpeaking && <div className="flex gap-1 items-center px-2 py-1 bg-[#FF5D8F]/10 rounded-full"><span className="text-[8px] text-[#FF5D8F] font-black uppercase">Receiving Brief</span></div>}
-                         <div className={`w-2 h-2 rounded-full ${commsState === 'on' ? 'bg-[#FF5D8F] shadow-[0_0_8px_#FF5D8F]' : 'bg-zinc-800'}`} />
-                      </div>
-                    </div>
-                    
-                    <button 
-                      onClick={() => handleToggleComms()}
-                      disabled={commsState === 'connecting'}
-                      className={`w-full py-5 rounded-2xl flex items-center justify-center gap-4 transition-all active:scale-95 border ${commsState === 'on' ? 'bg-[#FF5D8F] text-white border-[#FF5D8F] shadow-lg shadow-[#FF5D8F]/20' : 'bg-white/5 text-white/40 border-white/10 hover:border-[#FF5D8F]/50 hover:text-white'}`}
-                    >
-                      <svg className={`w-5 h-5 ${commsState === 'on' ? 'scale-110' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3">
-                         <path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                      </svg>
-                      <span className="text-[10px] font-black uppercase tracking-[0.2em]">{commsState === 'on' ? 'Disconnect Radio' : commsState === 'connecting' ? 'Establishing Link...' : 'Connect Tactical Comms'}</span>
-                    </button>
-
-                    {routeIntel && (
-                      <div className="p-4 bg-[#FF5D8F]/5 border border-[#FF5D8F]/10 rounded-2xl">
-                         <p className="text-[#FF5D8F] text-[8px] font-black uppercase tracking-widest mb-1.5 opacity-50">Active Intel Briefing</p>
-                         <p className="text-white/80 text-[10px] font-bold leading-relaxed line-clamp-3 italic opacity-60">"{routeIntel}"</p>
-                      </div>
-                    )}
-                  </div>
-
-                  <div className="bg-[#FF5D8F]/5 border border-[#FF5D8F]/10 rounded-3xl p-6 mt-12">
-                     <div className="flex items-center gap-4">
-                        <div className={`w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_#EF4444]`} />
-                        <div className="flex-1">
-                          <p className="text-white text-[10px] font-black uppercase tracking-[0.2em]">{isNavigating ? 'In Motion' : 'Stationary'}</p>
-                          <p className="text-zinc-500 text-[8px] font-bold uppercase tracking-widest mt-0.5">Recording Stream Status</p>
-                        </div>
-                     </div>
-                  </div>
                 </div>
               </div>
             )}
@@ -1214,7 +1610,175 @@ export default function MapControl() {
              <span className="text-[8px] font-mono text-zinc-700">v4.2.0</span>
           </div>
         </div>
-      </div>
+        </div>
+
+      {/* Passing Pin Cinematic Overlay */}
+      {passingPin && (
+        <div className="fixed inset-0 z-[500] flex flex-col items-center justify-center bg-black/95 animate-in fade-in duration-500 pointer-events-auto">
+          
+          {/* Explicit Background Close Layer designed to sit BEHIND the slider */}
+          <div className="absolute inset-0 cursor-pointer" onClick={() => setPassingPin(null)} />
+          
+          <div className="relative w-full h-full flex flex-col pointer-events-none">
+            {passingPin.images ? (
+              <>
+                {/* Cinematic Image Carousel: Left-to-Right Slider */}
+                <div 
+                  ref={scrollRef}
+                  onScroll={(e) => {
+                    const container = e.currentTarget;
+                    const center = container.scrollLeft + container.offsetWidth / 2;
+                    let newIdx = activeAssetIdx;
+                    let minDiff = Infinity;
+                    
+                    // Dynamically find the child closest to the center
+                    Array.from(container.children).forEach((child, i) => {
+                      const childCenter = (child as HTMLElement).offsetLeft + (child as HTMLElement).offsetWidth / 2;
+                      const diff = Math.abs(childCenter - center);
+                      if (diff < minDiff) {
+                        minDiff = diff;
+                        newIdx = i;
+                      }
+                    });
+                    
+                    if (newIdx !== activeAssetIdx) setActiveAssetIdx(newIdx);
+                  }}
+                  onMouseDown={(e) => {
+                    const el = e.currentTarget;
+                    el.dataset.isDown = 'true';
+                    el.dataset.startX = e.pageX.toString();
+                    el.dataset.scrollLeft = el.scrollLeft.toString();
+                    el.style.scrollSnapType = 'none'; // Disable snap physics while dragging
+                    el.style.cursor = 'grabbing';
+                  }}
+                  onMouseLeave={(e) => {
+                    const el = e.currentTarget;
+                    el.dataset.isDown = 'false';
+                    el.style.scrollSnapType = 'x mandatory';
+                    el.style.cursor = 'grab';
+                  }}
+                  onMouseUp={(e) => {
+                    const el = e.currentTarget;
+                    el.dataset.isDown = 'false';
+                    el.style.scrollSnapType = 'x mandatory';
+                    el.style.cursor = 'grab';
+                  }}
+                  onMouseMove={(e) => {
+                    const el = e.currentTarget;
+                    if (el.dataset.isDown !== 'true') return;
+                    e.preventDefault();
+                    const startX = parseFloat(el.dataset.startX || '0');
+                    const scrollLeft = parseFloat(el.dataset.scrollLeft || '0');
+                    const walk = (e.pageX - startX) * 2.5; // Drag friction multiplier
+                    el.scrollLeft = scrollLeft - walk;
+                  }}
+                  className="w-full flex-grow flex items-center gap-[4vw] overflow-x-auto no-scrollbar snap-x snap-mandatory px-[15vw] md:px-[20vw] lg:px-[25vw] pointer-events-auto cursor-grab"
+                >
+                  {(() => {
+                    try {
+                      const imgs = JSON.parse(passingPin.images);
+                      return Array.isArray(imgs) ? imgs.map((imgId: string, idx: number) => (
+                        <div 
+                          key={imgId} 
+                          onClick={(e) => e.stopPropagation()}
+                          className={`flex-shrink-0 w-[70vw] md:w-[60vw] lg:w-[50vw] aspect-[4/3] md:aspect-video snap-center relative transition-transform duration-700 ease-[cubic-bezier(0.23,1,0.32,1)] ${activeAssetIdx === idx ? 'scale-100 opacity-100 z-10' : 'scale-[0.4] opacity-30 grayscale blur-[2px] z-0'}`}
+                        >
+                          <img 
+                            src={`${WORKER_URL}/api/images/${imgId}`} 
+                            className="w-full h-full object-contain rounded-[2rem] md:rounded-[3rem] shadow-[0_0_100px_rgba(0,0,0,0.8)] pointer-events-none select-none" 
+                            draggable="false"
+                            alt={`Asset ${idx + 1}`}
+                          />
+                        </div>
+                      )) : null;
+                    } catch (e) { return null; }
+                  })()}
+                </div>
+              
+                {/* Pagination Controls */}
+                <div 
+                  className="flex justify-center gap-3 pb-8 pt-4 animate-in fade-in duration-1000 delay-500"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                   {(() => {
+                     try {
+                       const imgs = JSON.parse(passingPin.images);
+                       return Array.isArray(imgs) ? imgs.map((_, i) => (
+                         <div key={i} className={`h-1.5 rounded-full transition-all duration-700 ${activeAssetIdx === i ? 'w-12 bg-[#FF5D8F]' : 'w-3 bg-white/20'}`} />
+                       )) : null;
+                     } catch { return null; }
+                   })()}
+                </div>
+              </>
+            ) : (
+              <div 
+                className="m-auto bg-zinc-950 rounded-[5rem] p-16 flex flex-col items-center gap-8 border border-white/5 shadow-4xl animate-in zoom-in-95 duration-1000"
+                onClick={(e) => e.stopPropagation()}
+              >
+                 <div className="w-24 h-24 rounded-full bg-[#FF5D8F]/20 flex items-center justify-center shadow-[0_0_30px_rgba(255,93,143,0.3)]">
+                    <svg className="w-10 h-10 text-[#FF5D8F]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" /></svg>
+                 </div>
+                 <div className="text-center space-y-4">
+                   <h2 className="text-white text-4xl font-black uppercase tracking-tighter">Voice Pin</h2>
+                   <p className="text-zinc-500 text-lg font-bold max-w-md leading-relaxed">"{passingPin.text}"</p>
+                 </div>
+              </div>
+            )}
+          </div>
+
+          <div className="absolute bottom-12 left-1/2 -translate-x-1/2 flex items-center gap-4 bg-white/5 border border-white/10 px-8 py-5 rounded-[2rem] animate-in fade-in slide-in-from-bottom-20 duration-1000 delay-700 shadow-3xl pointer-events-auto">
+            <div className="w-10 h-10 rounded-2xl overflow-hidden border border-[#FF5D8F]/50 shadow-inner">
+              <img src={passingPin.avatar_url || `https://api.dicebear.com/7.x/avataaars/svg?seed=${passingPin.author_id}`} className="w-full h-full object-cover" alt="Author" />
+            </div>
+            <div className="flex flex-col items-start min-w-[120px]">
+              <span className="text-white text-[10px] font-black uppercase tracking-widest">{passingPin.author_name || 'Field Agent'}</span>
+              <span className="text-zinc-500 text-[8px] font-bold uppercase tracking-tighter mt-0.5">Recorded {new Date(passingPin.timestamp).toLocaleTimeString()}</span>
+            </div>
+            <div className="w-px h-6 bg-white/10 mx-2" />
+            <button 
+              onClick={(e) => { e.stopPropagation(); setPassingPin(null); }}
+              className="text-[#FF5D8F] text-[9px] font-black uppercase tracking-widest hover:text-white transition-colors"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+      {/* Route Summary Confirmation Popup */}
+      {showPlotConfirm && (
+        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[300] w-full max-w-sm px-6 animate-in slide-in-from-top-12 fade-in duration-500">
+           <div className="bg-[#0A0A0A] border border-white/10 rounded-[2rem] shadow-4xl p-8">
+              <div className="flex items-center justify-between mb-8">
+                <h2 className="text-white font-black text-xs uppercase tracking-widest">Summary</h2>
+                <button 
+                  onClick={() => setShowPlotConfirm(null)}
+                  className="text-zinc-600 hover:text-white"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M6 18L18 6M6 6l12 12" /></svg>
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-4">
+                {scoutingStatus === 'idle' ? (
+                  <button 
+                    onClick={handleRunRecon}
+                    className="w-full py-5 bg-[#FF5D8F] text-white font-black text-[10px] uppercase tracking-widest rounded-xl"
+                  >
+                     Summarize
+                  </button>
+                ) : scoutingStatus === 'searching' ? (
+                  <div className="text-center py-4">
+                     <span className="text-[10px] font-black text-[#FF5D8F] uppercase tracking-widest animate-pulse">Searching...</span>
+                  </div>
+                ) : (
+                  <div className="flex justify-center py-4 text-green-500">
+                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M5 13l4 4L19 7" /></svg>
+                  </div>
+                )}
+              </div>
+           </div>
+        </div>
+      )}
     </div>
   );
 }
