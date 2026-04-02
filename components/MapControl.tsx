@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Map, { Marker, Source, Layer, MapRef, Popup } from 'react-map-gl/mapbox';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import * as turf from '@turf/turf';
@@ -11,6 +11,57 @@ const ELEVENLABS_KEY = process.env.NEXT_PUBLIC_ELEVENLABS_API_KEY || '';
 const AVATAR_OPTIONS = [
   'Aero', 'Mia', 'Rider', 'Ace', 'Ghost', 'Shadow', 'Bolt', 'Viper', 'Nova', 'Echo'
 ];
+
+// --- Sub-components to prevent entire MapControl re-renders on keystrokes ---
+
+const OnboardingInput = React.memo(({ initialValue, onConfirm, placeholder }: { initialValue: string, onConfirm: (val: string) => void, placeholder: string }) => {
+  const [localValue, setLocalValue] = useState(initialValue);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  useEffect(() => { setLocalValue(initialValue); }, [initialValue]);
+
+  return (
+    <input 
+      type="text" 
+      value={localValue} 
+      onChange={(e) => {
+        const val = e.target.value;
+        setLocalValue(val);
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        timeoutRef.current = setTimeout(() => {
+          onConfirm(val);
+        }, 150); // Small debounce to decouple keystroke from heavy re-render
+      }}
+      className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white text-lg font-black focus:outline-none focus:border-[#FF5D8F] transition-all text-center"
+      placeholder={placeholder}
+    />
+  );
+});
+
+const ProfileUpdateInput = React.memo(({ initialValue, onConfirm, placeholder, isMono = false }: { initialValue: string, onConfirm: (val: string) => void, placeholder: string, isMono?: boolean }) => {
+  const [localValue, setLocalValue] = useState(initialValue);
+  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  
+  useEffect(() => { setLocalValue(initialValue); }, [initialValue]);
+
+  return (
+    <input 
+      type="text" 
+      value={localValue} 
+      onChange={(e) => {
+         const val = e.target.value;
+         setLocalValue(val);
+         if (timeoutRef.current) clearTimeout(timeoutRef.current);
+         timeoutRef.current = setTimeout(() => {
+           onConfirm(val);
+         }, 150);
+      }}
+      className={`w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-sm font-bold focus:outline-none focus:border-[#FF5D8F] transition-all ring-1 ring-transparent focus:ring-[#FF5D8F]/20 ${isMono ? 'font-mono' : ''}`}
+      placeholder={placeholder}
+    />
+  );
+});
+
 
 export default function MapControl() {
   const mapRef = useRef<MapRef>(null);
@@ -40,6 +91,7 @@ export default function MapControl() {
     longitude: -122.4,
     latitude: 37.8
   });
+  const lastProximityPosRef = useRef({ longitude: 0, latitude: 0 });
   const [riderBearing, setRiderBearing] = useState(0);
   const [routeData, setRouteData] = useState<any>(null);
   const [isNavigating, setIsNavigating] = useState(false);
@@ -745,11 +797,23 @@ export default function MapControl() {
     }
   };
 
-  const filteredPins = pins.filter(p => !isGroupOnly || friendsList.some(f => f.id === p.author_id) || p.author_id === currentUser.id);
+  const filteredPins = useMemo(() => {
+    if (!pins || !currentUser) return [];
+    return pins.filter(p => !isGroupOnly || (friendsList && friendsList.some(f => f.id === p.author_id)) || p.author_id === currentUser.id);
+  }, [pins, isGroupOnly, friendsList, currentUser]);
 
   // 🛰️ PROXIMITY ENGINE: Auto-trigger audio when near pins
   useEffect(() => {
     if (isPlaying || filteredPins.length === 0) return;
+
+    // optimization: only run if moved > 5 meters to avoid 60fps churn
+    const distMoved = turf.distance(
+      [riderPosition.longitude, riderPosition.latitude],
+      [lastProximityPosRef.current.longitude, lastProximityPosRef.current.latitude],
+      { units: 'meters' }
+    );
+    if (distMoved < 5) return;
+    lastProximityPosRef.current = { longitude: riderPosition.longitude, latitude: riderPosition.latitude };
 
     filteredPins.forEach(pin => {
       if (visitedPins.has(pin.id)) return;
@@ -1249,12 +1313,10 @@ export default function MapControl() {
             <div className="space-y-4 pt-4">
               <div className="space-y-1.5">
                 <label className="text-[9px] uppercase tracking-widest text-zinc-500 font-bold">Your Callsign</label>
-                <input 
-                  type="text" 
-                  value={profileName} 
-                  onChange={(e) => setProfileName(e.target.value)}
-                  className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white text-lg font-black focus:outline-none focus:border-[#FF5D8F] transition-all text-center"
-                  placeholder="Rider Name"
+                <OnboardingInput 
+                  initialValue={profileName} 
+                  onConfirm={(val) => setProfileName(val)}
+                  placeholder="Rider Name" 
                 />
               </div>
             </div>
@@ -1369,22 +1431,19 @@ export default function MapControl() {
                 <div className="space-y-5 pt-4">
                   <div className="space-y-2">
                     <label className="text-[9px] uppercase tracking-widest text-[#FF5D8F] font-bold px-1 py-1 bg-[#FF5D8F]/10 rounded border border-[#FF5D8F]/20 inline-block">Rider Profile</label>
-                    <div className="space-y-3">
-                       <input 
-                        type="text" 
-                        value={profileName} 
-                        onChange={(e) => setProfileName(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-sm font-bold focus:outline-none focus:border-[#FF5D8F] transition-all ring-1 ring-transparent focus:ring-[#FF5D8F]/20"
-                        placeholder="Rider Name"
-                      />
-                      <input 
-                        type="text" 
-                        value={profileHandle} 
-                        onChange={(e) => setProfileHandle(e.target.value)}
-                        className="w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-sm font-mono font-bold focus:outline-none focus:border-[#FF5D8F] transition-all ring-1 ring-transparent focus:ring-[#FF5D8F]/20"
-                        placeholder="@handle"
-                      />
-                    </div>
+                      <div className="space-y-3">
+                         <ProfileUpdateInput 
+                          initialValue={profileName} 
+                          onConfirm={(val: string) => setProfileName(val)}
+                          placeholder="Rider Name"
+                        />
+                        <ProfileUpdateInput 
+                          initialValue={profileHandle} 
+                          onConfirm={(val: string) => setProfileHandle(val)}
+                          placeholder="@handle"
+                          isMono={true}
+                        />
+                      </div>
                   </div>
                   <button 
                     onClick={handleUpdateProfile}
