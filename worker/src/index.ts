@@ -122,6 +122,17 @@ export default {
           console.error('Type classification failed', e);
         }
 
+        // --- AI Call 2: Generate Title ---
+        try {
+          const titleRes: any = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+            prompt: `Generate a very short, 2-to-4 word descriptive title for this message. No quotes, no headers, no prefixes. Just the title.\nMessage: "${text}"`
+          });
+          const rawTitle = titleRes.response.trim().replace(/^"|"$/g, '');
+          if (rawTitle) pinTitle = rawTitle;
+        } catch (e) {
+          console.error('Title generation failed', e);
+        }
+
         // --- AI Call 3: Scouting Report (Enrichment) ---
         let scoutReport = null;
         if (scout) {

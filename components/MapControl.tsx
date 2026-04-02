@@ -766,8 +766,7 @@ export default function MapControl() {
           next.add(pin.id);
           return next;
         });
-        setPassingPin(pin);
-        setTimeout(() => setPassingPin(null), 8000); 
+        setSelectedPin(pin);
 
         if (pin.audio_id) {
           playVoice(pin.id, pin.text, 'original', pin.audio_id);
@@ -876,6 +875,7 @@ export default function MapControl() {
       console.error('Recon request failed:', err);
     }
     setScoutingStatus('complete');
+    setShowPlotConfirm(null); // Dismiss immediately once audio is loaded/started
   };
 
 
@@ -1127,9 +1127,22 @@ export default function MapControl() {
  
                 {/* Image Picker Section */}
                 {recordingState === 'preview' && (
-                  <div className="w-full space-y-4 pt-4 border-t border-white/5">
+                  <div 
+                    className="w-full space-y-4 pt-4 border-t border-white/5"
+                    onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        const files = Array.from(e.dataTransfer.files).filter(f => f.type.startsWith('image/'));
+                        if (files.length > 0) {
+                          setSelectedImages(prev => [...prev, ...files]);
+                        }
+                      }
+                    }}
+                  >
                     <div className="flex items-center justify-between">
-                      <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Attach Visual Intel</h3>
+                      <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Attach Images</h3>
                       <span className="text-[10px] text-[#FF5D8F] font-black">{selectedImages.length}</span>
                     </div>
                     
@@ -1155,15 +1168,11 @@ export default function MapControl() {
                 )}
  
               {recordingState === 'transcribing' && (
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="w-20 h-20 rounded-full border-2 border-[#FF5D8F]/30 flex items-center justify-center">
-                      <div className="w-12 h-12 bg-[#FF5D8F]/10 rounded-full flex items-center justify-center">
-                        <svg className="w-6 h-6 text-[#FF5D8F]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M12 4V2m0 20v-2m8-8h2M2 12h2" /></svg>
-                      </div>
-                    </div>
-                    <div>
-                      <p className="text-white font-black text-lg uppercase tracking-tight">Recording Voice</p>
-                      <p className="text-zinc-500 text-[8px] font-bold uppercase tracking-widest">Processing Tactical Input</p>
+                  <div className="flex flex-col items-center gap-6">
+                    <div className="w-16 h-16 rounded-full border-[4px] border-[#FF5D8F]/20 border-t-[#FF5D8F] animate-spin shadow-[0_0_15px_rgba(255,93,143,0.2)]" style={{ willChange: 'transform', transform: 'translateZ(0)' }}></div>
+                    <div className="text-center">
+                      <p className="text-white font-black text-lg uppercase tracking-tight">Processing</p>
+                      <p className="text-[#FF5D8F] text-[8px] font-bold uppercase tracking-widest mt-1 animate-pulse">Uploading Tactical Intel</p>
                     </div>
                   </div>
                 )}
@@ -1311,7 +1320,7 @@ export default function MapControl() {
       )}
 
       <div className={`absolute top-6 right-6 z-10 w-80 h-[calc(100vh-3rem)] pointer-events-none transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)] ${isSidebarOpen ? 'translate-x-0 opacity-100 scale-100' : 'translate-x-12 opacity-0 scale-95'}`}>
-        <div className="bg-[#0A0A0A] border border-white/10 h-full rounded-[2.5rem] shadow-4xl relative flex flex-col pointer-events-auto overflow-hidden">
+        <div className={`bg-[#0A0A0A] border border-white/10 h-full rounded-[2.5rem] shadow-4xl relative flex flex-col overflow-hidden ${isSidebarOpen ? 'pointer-events-auto' : 'pointer-events-none'}`}>
           
           {/* New Sleek Closer - Relocated to top right corner of sidebar */}
           <button 
@@ -1746,33 +1755,29 @@ export default function MapControl() {
       )}
       {/* Route Summary Confirmation Popup */}
       {showPlotConfirm && (
-        <div className="fixed top-24 left-1/2 -translate-x-1/2 z-[300] w-full max-w-sm px-6 animate-in slide-in-from-top-12 fade-in duration-500">
-           <div className="bg-[#0A0A0A] border border-white/10 rounded-[2rem] shadow-4xl p-8">
-              <div className="flex items-center justify-between mb-8">
-                <h2 className="text-white font-black text-xs uppercase tracking-widest">Summary</h2>
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[300] animate-in slide-in-from-bottom-8 fade-in gap-5 duration-500">
+           <div className="bg-[#0A0A0A] border border-white/10 rounded-full shadow-4xl p-1.5 flex items-stretch gap-6">
+              <div className="pl-5 flex items-center gap-3">
+                <span className="text-white font-black text-[10px] uppercase tracking-widest leading-none translate-y-[0.5px]">Summary</span>
                 <button 
                   onClick={() => setShowPlotConfirm(null)}
-                  className="text-zinc-600 hover:text-white"
+                  className="text-zinc-600 hover:text-white flex items-center transition-colors"
                 >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M6 18L18 6M6 6l12 12" /></svg>
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
 
-              <div className="flex flex-col gap-4">
+              <div className="flex">
                 {scoutingStatus === 'idle' ? (
                   <button 
                     onClick={handleRunRecon}
-                    className="w-full py-5 bg-[#FF5D8F] text-white font-black text-[10px] uppercase tracking-widest rounded-xl"
+                    className="px-6 py-3 bg-[#FF5D8F] text-white font-black text-[10px] uppercase tracking-widest rounded-full hover:scale-105 active:scale-95 transition-all shadow-lg shadow-[#FF5D8F]/20 flex items-center justify-center leading-none"
                   >
                      Summarize
                   </button>
-                ) : scoutingStatus === 'searching' ? (
-                  <div className="text-center py-4">
-                     <span className="text-[10px] font-black text-[#FF5D8F] uppercase tracking-widest animate-pulse">Searching...</span>
-                  </div>
                 ) : (
-                  <div className="flex justify-center py-4 text-green-500">
-                    <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="4"><path d="M5 13l4 4L19 7" /></svg>
+                  <div className="px-6 py-3 flex items-center justify-center">
+                     <span className="text-[10px] font-black text-[#FF5D8F] uppercase tracking-widest animate-pulse leading-none">Searching...</span>
                   </div>
                 )}
               </div>
