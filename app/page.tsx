@@ -13,8 +13,8 @@ const MapControl = dynamic(() => import('@/components/MapControl'), {
 
 export default function Home() {
   return (
-    <main className="flex h-screen w-full flex-col bg-black">
+    <div className="flex-1 flex flex-col bg-black">
       <MapControl />
-    </main>
+    </div>
   );
 }

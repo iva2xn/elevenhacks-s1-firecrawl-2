@@ -34,6 +34,9 @@ const OnboardingInput = React.memo(({ initialValue, onConfirm, placeholder }: { 
       }}
       className="w-full bg-white/5 border border-white/10 rounded-2xl px-6 py-4 text-white text-lg font-black focus:outline-none focus:border-[#FF5D8F] transition-all text-center"
       placeholder={placeholder}
+      spellCheck={false}
+      autoCorrect="off"
+      autoComplete="off"
     />
   );
 });
@@ -58,6 +61,9 @@ const ProfileUpdateInput = React.memo(({ initialValue, onConfirm, placeholder, i
       }}
       className={`w-full bg-white/5 border border-white/10 rounded-2xl px-5 py-4 text-white text-sm font-bold focus:outline-none focus:border-[#FF5D8F] transition-all ring-1 ring-transparent focus:ring-[#FF5D8F]/20 ${isMono ? 'font-mono' : ''}`}
       placeholder={placeholder}
+      spellCheck={false}
+      autoCorrect="off"
+      autoComplete="off"
     />
   );
 });
@@ -1148,7 +1154,7 @@ export default function MapControl() {
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-white font-black text-xl uppercase tracking-tighter">Record</h2>
-                  <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest mt-1">Aero Co-Pilot Voice Engine</p>
+                  <p className="text-zinc-400 text-[10px] font-bold uppercase tracking-widest mt-1">Aero Co-Pilot Voice Engine</p>
                 </div>
                 <button onClick={() => setIsCreatingPin(null)} className="p-2 -mr-2 text-zinc-600 hover:text-white transition-colors">
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="3"><path d="M6 18L18 6M6 6l12 12" /></svg>
@@ -1163,7 +1169,7 @@ export default function MapControl() {
                     </div>
                     <div>
                       <p className="text-white font-black text-lg uppercase tracking-tight">Ready</p>
-                      <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Tap below to start</p>
+                      <p className="text-zinc-400 text-[10px] font-bold uppercase tracking-widest">Tap below to start</p>
                     </div>
                   </div>
                 )}
@@ -1206,7 +1212,7 @@ export default function MapControl() {
                     }}
                   >
                     <div className="flex items-center justify-between">
-                      <h3 className="text-[10px] text-zinc-500 font-black uppercase tracking-widest">Attach Images</h3>
+                      <h3 className="text-[10px] text-zinc-400 font-black uppercase tracking-widest">Attach Images</h3>
                       <span className="text-[10px] text-[#FF5D8F] font-black">{selectedImages.length}</span>
                     </div>
                     
@@ -1267,7 +1273,7 @@ export default function MapControl() {
                     </button>
                     <button 
                       onClick={() => { setAudioBlob(null); setPreviewUrl(null); setRecordingState('idle'); }}
-                      className="w-full py-3 text-zinc-500 hover:text-white transition-all font-bold text-[10px] uppercase tracking-widest"
+                      className="w-full py-3 text-zinc-400 hover:text-white transition-all font-bold text-[10px] uppercase tracking-widest"
                     >
                       Delete & Restart
                     </button>
@@ -1279,17 +1285,17 @@ export default function MapControl() {
         </div>
       )}
 
-      {/* Onboarding Overlay */}
+      {/* Onboarding Overlay - Optimized bg-black/95 instead of backdrop-blur to avoid lag */}
       {isOnboarding && (
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/80 backdrop-blur-3xl animate-in fade-in duration-500">
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-6 bg-black/95 animate-in fade-in duration-300">
           <div className="w-full max-w-sm bg-[#0A0A0A] border border-white/10 rounded-3xl shadow-3xl overflow-hidden p-10 text-center space-y-8 animate-in zoom-in-95 duration-500">
             <div className="space-y-2">
               <h1 className="text-white text-3xl font-black uppercase tracking-tighter">Welcome to Aero</h1>
-              <p className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Co-Pilot Social Network</p>
+              <p className="text-zinc-400 text-xs font-bold uppercase tracking-widest">Co-Pilot Social Network</p>
             </div>
 
             <div className="relative mx-auto w-40 h-40 group">
-              <div className="absolute inset-0 bg-[#FF5D8F]/20 blur-3xl rounded-full animate-pulse"></div>
+              <div className="absolute inset-0 bg-[#FF5D8F]/10 blur-xl rounded-full animate-pulse"></div>
               <div className="relative w-full h-full rounded-full border-4 border-[#FF5D8F] p-1.5 bg-[#0A0A0A] shadow-2xl overflow-hidden flex items-center justify-center">
                  <img src={currentUser?.avatar_url} className="w-full h-full object-cover rounded-full" alt="Avatar" />
                  
@@ -1312,7 +1318,7 @@ export default function MapControl() {
 
             <div className="space-y-4 pt-4">
               <div className="space-y-1.5">
-                <label className="text-[9px] uppercase tracking-widest text-zinc-500 font-bold">Your Callsign</label>
+                <label className="text-[9px] uppercase tracking-widest text-zinc-400 font-bold">Your Callsign</label>
                 <OnboardingInput 
                   initialValue={profileName} 
                   onConfirm={(val) => setProfileName(val)}
@@ -1571,10 +1577,10 @@ export default function MapControl() {
                         </div>
                       ) : (
                         <div className="py-12 text-center bg-white/2 border border-white/10 border-dashed rounded-[2.5rem] flex flex-col items-center gap-3">
-                           <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center text-zinc-700">
+                           <div className="w-12 h-12 rounded-full bg-white/5 flex items-center justify-center text-zinc-400">
                              <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
                            </div>
-                           <p className="text-zinc-600 text-[10px] font-black uppercase tracking-widest">No squadron data</p>
+                           <p className="text-zinc-400 text-[10px] font-black uppercase tracking-widest">No squadron data</p>
                         </div>
                       )}
                     </div>
@@ -1619,7 +1625,7 @@ export default function MapControl() {
                           </div>
                         )) : (
                           <div className="py-12 text-center bg-white/2 border border-white/10 border-dashed rounded-[2.5rem]">
-                            <p className="text-zinc-600 text-[10px] font-black uppercase tracking-widest">Scanning for riders...</p>
+                            <p className="text-zinc-400 text-[10px] font-black uppercase tracking-widest">Scanning for riders...</p>
                           </div>
                         )}
                       </div>
